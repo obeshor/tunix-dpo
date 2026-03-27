@@ -1,0 +1,115 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.backends.legacy:build"
+
+[project]
+name = "tunix-dpo"
+version = "0.1.0"
+description = "End-to-end DPO alignment pipeline: HH-RLHF → TPU training → TruthfulQA/ToxiGen → vLLM serving"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "Apache-2.0" }
+authors = [{ name = "Yannick Serge Obam", email = "yannicksergeobam@gmail.com" }]
+keywords = ["alignment", "dpo", "jax", "tpu", "llm", "safety"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3.11",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+dependencies = [
+    "datasets>=2.20.0",
+    "transformers>=4.44.0",
+    "torch>=2.2.0",
+    "numpy>=1.26.0",
+    "tqdm>=4.66.0",
+    "pyyaml>=6.0.1",
+    "sentencepiece>=0.2.0",
+]
+
+[project.optional-dependencies]
+training = [
+    "jax>=0.4.30",
+    "jaxlib>=0.4.30",
+    "flax>=0.8.5",
+    "optax>=0.2.3",
+    "orbax-checkpoint>=0.6.0",
+    "tensorboardX>=2.6.2",
+    "tunix",
+]
+eval = [
+    "numpy>=1.26.0",
+    "matplotlib>=3.8.0",
+    "pandas>=2.1.0",
+    "scipy>=1.13.0",
+]
+serving = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.30.6",
+    "pydantic>=2.8.2",
+    "safetensors>=0.4.3",
+    "aiohttp>=3.9.0",
+]
+litert = [
+    "tensorflow>=2.17.0",
+    "ai-edge-torch>=0.2.0",
+]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "ruff>=0.4.0",
+    "mypy>=1.10.0",
+    "pre-commit>=3.7.0",
+]
+all = [
+    "tunix-dpo[training,eval,serving,dev]",
+]
+
+[project.scripts]
+tunix-curate   = "tunix_dpo.data.curate:main"
+tunix-train    = "tunix_dpo.training.train:main"
+tunix-eval     = "tunix_dpo.evaluation.runner:main"
+tunix-export   = "tunix_dpo.serving.export:main"
+tunix-serve    = "tunix_dpo.serving.server:main"
+
+[project.urls]
+Repository = "https://github.com/obeshor/tunix-dpo"
+Issues     = "https://github.com/obeshor/tunix-dpo/issues"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
+
+# ── Ruff (linting + formatting) ──────────────────────────────────────────────
+[tool.ruff]
+line-length    = 100
+target-version = "py311"
+src            = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "N", "ANN", "S", "B", "A", "C4", "RUF"]
+ignore = [
+    "ANN101",  # self annotation
+    "ANN102",  # cls annotation
+    "S101",    # assert in tests
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["ANN", "S"]
+
+# ── Mypy ─────────────────────────────────────────────────────────────────────
+[tool.mypy]
+python_version         = "3.11"
+strict                 = true
+ignore_missing_imports = true
+exclude                = ["tests/"]
+
+# ── Pytest ───────────────────────────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths     = ["tests"]
+asyncio_mode  = "auto"
+addopts       = "-v --tb=short"
