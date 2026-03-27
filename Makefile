@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────────────────
-# Makefile — tunix-dpo project automation
+# Makefile — tunix_dpo project automation
 # ─────────────────────────────────────────────────────────────────────────────
 # Usage:
 #   make install       install all dependencies (editable mode)
