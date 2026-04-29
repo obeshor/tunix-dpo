@@ -48,7 +48,7 @@ TPU v5e requires a quota increase before it can be created.
 
 Go to **Console → IAM & Admin → Quotas**, search for:
 - Quota name: `TPUS-PER-PROJECT-per-zone`
-- Region: `us-central1` (or your chosen region)
+- Region: `us-west4` (or your chosen region)
 
 Request a limit of **8** chips. Approval typically takes a few minutes to
 a few hours for GDE sprint accounts.
@@ -80,8 +80,8 @@ Edit `environments/dev/terraform.tfvars`:
 
 ```hcl
 project_id = "your-actual-project-id"
-zone       = "us-central1-a"
-region     = "us-central1"
+zone       = "us-west4-a"
+region     = "us-west4"
 ```
 
 ### Step 2 — Initialise Terraform
@@ -143,7 +143,7 @@ tpu_name              = "tunix-dpo-v5e"
 tpu_state             = "READY"
 bucket_url            = "gs://your-project-tunix-checkpoints"
 service_account_email = "tunix-tpu-sa@your-project.iam.gserviceaccount.com"
-ssh_command           = "gcloud compute tpus tpu-vm ssh tunix-dpo-v5e --zone=us-central2-b ..."
+ssh_command           = "gcloud compute tpus tpu-vm ssh tunix-dpo-v5e --zone=us-west4-a ..."
 scp_command           = "gcloud compute tpus tpu-vm scp --recurse ./ tunix-dpo-v5e:~/tunix-dpo/ ..."
 ```
 
@@ -163,7 +163,7 @@ Use the `scp_command` output directly:
 ```bash
 gcloud compute tpus tpu-vm scp \
   --recurse ./ tunix-dpo-v5e:~/tunix-dpo/ \
-  --zone=us-central1-a \
+  --zone=us-west4-a \
   --project=your-project-id
 ```
 
@@ -171,7 +171,7 @@ gcloud compute tpus tpu-vm scp \
 
 ```bash
 gcloud compute tpus tpu-vm ssh tunix-dpo-v5e \
-  --zone=us-central1-a \
+  --zone=us-west4-a \
   --project=your-project-id
 
 # Once on the VM:
