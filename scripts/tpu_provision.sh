@@ -11,7 +11,7 @@ set -euo pipefail
 PROJECT="${GCP_PROJECT:-your-gcp-project-id}"
 ZONE="${TPU_ZONE:-us-west4-a}"
 TPU_NAME="${TPU_NAME:-tunix-dpo-v5e}"
-ACCELERATOR_TYPE="v5e-8"
+ACCELERATOR_TYPE="v5litepod-4"
 RUNTIME_VERSION="tpu-vm-tf-2.16.1-pjrt"
 DISK_SIZE="200"
 PREEMPTIBLE="${PREEMPTIBLE:-false}"

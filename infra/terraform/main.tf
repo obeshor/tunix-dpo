@@ -25,7 +25,9 @@ provider "google" {
 # ── Local values ──────────────────────────────────────────────────────────────
 
 locals {
-  bucket_name = var.bucket_name != "" ? var.bucket_name : lower("${var.project_id}-tunix-checkpoints")
+  # Strip gs:// prefix if the user accidentally included it in the variable,
+  # otherwise use the local bucket_name which derives from project ID.
+  bucket_name = var.bucket_name != "" ? replace(var.bucket_name, "gs://", "") : lower("${var.project_id}-tunix-checkpoints")
   sa_email    = "${var.service_account_id}@${var.project_id}.iam.gserviceaccount.com"
 }
 
@@ -157,6 +159,10 @@ resource "google_tpu_v2_vm" "training" {
   service_account {
     email  = google_service_account.tpu_sa.email
     scope  = ["https://www.googleapis.com/auth/cloud-platform"]
+  }
+
+  network_config {
+    enable_external_ips = true
   }
 
   # Preemptible (Spot) VMs are ~70% cheaper but can be interrupted.

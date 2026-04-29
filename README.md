@@ -132,7 +132,7 @@ tunix-train --config configs/dpo_v5e.yaml
 Override any config key from the CLI:
 
 ```bash
-tunix-train --config configs/dpo_v5e.yaml training.beta=0.05 training.num_epochs=2
+tr
 ```
 
 ### Phase 3 — Evaluation
