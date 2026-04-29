@@ -35,7 +35,7 @@ variable "tpu_name" {
 variable "accelerator_type" {
   description = "TPU accelerator type. v5e hardware uses v5litepod names in the API."
   type        = string
-  default     = "v5litepod-8"
+  default     = "v5litepod-4"
 }
 
 variable "runtime_version" {
