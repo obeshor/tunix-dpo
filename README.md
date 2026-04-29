@@ -121,11 +121,21 @@ tunix-curate \
 # Provision GCP v5e-8 (one-time)
 ./scripts/tpu_provision.sh --project my-project --zone us-west4-a
 
+# or use Terraform -> infra/terraform/README.md
+
 # Copy files to TPU VM and train
-gcloud compute tpus tpu-vm scp --recurse ./ tunix-dpo-v5e:~/ --zone=us-west4-a
+gcloud compute tpus tpu-vm scp --recurse ./ tunix-dpo-v5e:~/tunix-dpo --zone=us-west4-a
 gcloud compute tpus tpu-vm ssh tunix-dpo-v5e --zone=us-west4-a
 
 # On the TPU VM:
+cd ~/tunix-dpo
+pip install -e ".[training]"
+pip install "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
+
+# Verify  chips are visible
+python -c "import jax; print(len(jax.devices()), 'TPU devices')"
+
+# Train
 tunix-train --config configs/dpo_v5e.yaml
 ```
 
