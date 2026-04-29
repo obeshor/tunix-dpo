@@ -3,7 +3,7 @@ terraform {
 
   required_providers {
     google = {
-      source  = "hashicorp/google"
+      source  = "hashicorp/google-beta"
       version = "~> 5.0"
     }
   }
@@ -25,7 +25,7 @@ provider "google" {
 # ── Local values ──────────────────────────────────────────────────────────────
 
 locals {
-  bucket_name = var.bucket_name != "" ? var.bucket_name : "${var.project_id}-tunix-checkpoints"
+  bucket_name = var.bucket_name != "" ? var.bucket_name : lower("${var.project_id}-tunix-checkpoints")
   sa_email    = "${var.service_account_id}@${var.project_id}.iam.gserviceaccount.com"
 }
 
@@ -157,13 +157,6 @@ resource "google_tpu_v2_vm" "training" {
   service_account {
     email  = google_service_account.tpu_sa.email
     scope  = ["https://www.googleapis.com/auth/cloud-platform"]
-  }
-
-  # Boot disk
-  boot_disk {
-    # Zonal persistent disk in the same zone as the TPU VM.
-    disk_size_gb  = var.boot_disk_size_gb
-    disk_type = "pd-ssd"
   }
 
   # Preemptible (Spot) VMs are ~70% cheaper but can be interrupted.

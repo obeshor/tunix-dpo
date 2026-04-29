@@ -22,7 +22,7 @@ variable "zone" {
       "us-west4-a",
       "europe-west4-b",
     ], var.zone)
-    error_message = "Zone must be one of the zones where TPU v5e hardware is available."
+    error_message = "Zone must be one of the zones where TPU v5litepod hardware is available."
   }
 }
 
@@ -33,21 +33,15 @@ variable "tpu_name" {
 }
 
 variable "accelerator_type" {
-  description = "TPU accelerator type. v5e-8 = one v5e pod slice with 8 chips."
+  description = "TPU accelerator type. v5e hardware uses v5litepod names in the API."
   type        = string
-  default     = "v5e-8"
+  default     = "v5litepod-8"
 }
 
 variable "runtime_version" {
   description = "TPU software runtime version."
   type        = string
   default     = "tpu-vm-tf-2.16.1-pjrt"
-}
-
-variable "boot_disk_size_gb" {
-  description = "Boot disk size in GB for the TPU VM."
-  type        = number
-  default     = 200
 }
 
 variable "preemptible" {
