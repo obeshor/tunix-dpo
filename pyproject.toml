@@ -37,7 +37,7 @@ serving = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "vllm>=0.5.5; platform_system != 'Darwin'",
-    "torch>=2.4",
+    "torch>=2.4; platform_system != 'Darwin'",
     "safetensors>=0.4",
 ]
 eval = [

@@ -1,7 +1,7 @@
 # Tunix DPO — Terraform module
 
 Provisions the GCP infrastructure for Phase 2 (TPU training) of the Tunix DPO
-project. Creates a v5e-8 TPU VM in `us-west4-a`, a GCS checkpoint bucket
+project. Creates a v5e-4 TPU VM in `us-west4-a`, a GCS checkpoint bucket
 co-located in `us-west4`, and the supporting service account + IAM bindings.
 
 ## Resources created
@@ -39,19 +39,19 @@ terraform destroy -var-file=environments/dev/terraform.tfvars
 
 ## Variable reference
 
-| Variable | Default | Notes |
-| --- | --- | --- |
-| `project_id` | *required* | Your GCP project. |
-| `region` | `us-west4` | TPU quota lives at the region level. |
-| `zone` | `us-west4-a` | Must be a v5e zone (validated). |
-| `tpu_name` | `tunix-dpo-v5e` | The VM name. |
-| `accelerator_type` | `v5litepod-8` | gcloud/TF naming for v5e-8. |
-| `runtime_version` | `v2-alpha-tpuv5-lite` | The v5e runtime. |
-| `env` | `dev` | Label only. |
+| Variable | Default               | Notes                                |
+| --- |-----------------------|--------------------------------------|
+| `project_id` | *required*            | Your GCP project.                    |
+| `region` | `us-west4`            | TPU quota lives at the region level. |
+| `zone` | `us-west4-a`          | Must be a v5e zone (validated).      |
+| `tpu_name` | `tunix-dpo-v5e`       | The VM name.                         |
+| `accelerator_type` | `v5litepod-4`         | gcloud/TF naming for v5e-4.          |
+| `runtime_version` | `v2-alpha-tpuv5-lite` | The v5e runtime.                     |
+| `env` | `dev`                 | Label only.                          |
 
 ## Cost reminder
 
-A `v5litepod-8` (TPU v5e-8) on demand costs roughly **$12–16/hour**. A typical
+A `v5litepod-8` (TPU v5e-4) on demand costs roughly **$12–16/hour**. A typical
 training run (1 epoch over 157K HH-RLHF pairs with Gemma 3 1B IT) takes
 **3–6 hours**, so a complete run is **$50–100**.
 

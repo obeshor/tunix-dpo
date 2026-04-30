@@ -19,10 +19,20 @@ terraform {
       source  = "hashicorp/google"
       version = "~> 5.0"
     }
+    google-beta = {
+      source  = "hashicorp/google-beta"
+      version = "~> 5.0"
+    }
   }
 }
 
 provider "google" {
+  project = var.project_id
+  region  = var.region
+  zone    = var.zone
+}
+
+provider "google-beta" {
   project = var.project_id
   region  = var.region
   zone    = var.zone
@@ -108,9 +118,11 @@ resource "google_storage_bucket" "checkpoints" {
 # The "v5litepod-8" name is the gcloud / Compute Engine convention; the
 # Terraform google_tpu_v2_vm resource accepts the same accelerator types.
 resource "google_tpu_v2_vm" "training" {
+
+  provider = google-beta
   name             = var.tpu_name
   zone             = var.zone
-  description      = "Tunix DPO training VM (Gemma 3 1B IT, DPO)"
+  description      = "Tunix DPO training VM (Gemma 3 1B IT, DPO, v5e-8)"
   accelerator_type = var.accelerator_type
   runtime_version  = var.runtime_version
 

@@ -1,179 +1,117 @@
-# tunix-dpo
+# Tunix DPO
 
-End-to-end DPO alignment pipeline: HH-RLHF curation → TPU training → TruthfulQA/ToxiGen evaluation → vLLM serving.
+End-to-end DPO alignment pipeline: HH-RLHF curation → TPU training → TruthfulQA/ToxiGen evaluation → vLLM serving
 
-[![Tests](https://img.shields.io/badge/tests-pytest-blue)](tests/)
-[![Python](https://img.shields.io/badge/python-3.11-blue)](pyproject.toml)
-[![License](https://img.shields.io/badge/license-Apache--2.0-green)](LICENSE)
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/downloads/)
+[![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+[![JAX](https://img.shields.io/badge/JAX-0.4.30+-orange)](https://github.com/google/jax)
+[![Gemma 3](https://img.shields.io/badge/model-gemma--3--1b--it-purple)](https://huggingface.co/google/gemma-3-1b-it)
 
----
-
-## Results
-
-| Benchmark | Metric | Base | DPO-tuned | Δ |
-|-----------|--------|------|-----------|---|
-| TruthfulQA | Binary accuracy ★ | 0.512 | 0.614 | **+19.9%** |
-| TruthfulQA | Calibration error ↓ | 0.341 | 0.274 | −19.6% |
-| ToxiGen | Gen. toxicity rate ↓ | 0.412 | 0.218 | **−47.1%** |
-| ToxiGen | Discrimination accuracy | 0.631 | 0.748 | +18.5% |
-| Serving | Peak throughput | — | **601 tok/s** | — |
-
-All improvements are statistically significant (95% bootstrap CIs, non-overlapping).
+Five command-line tools — `tunix-curate`, `tunix-train`, `tunix-eval`, `tunix-export`, `tunix-serve` —
+covering the full lifecycle from raw HH-RLHF data to a live OpenAI-compatible API.
 
 ---
 
-## Project structure
-
-```
-tunix-dpo/
-├── pyproject.toml              ← packaging, deps, entry points, ruff/mypy config
-├── Makefile                    ← all common tasks as `make <target>`
-├── Dockerfile                  ← GPU inference container (Cloud Run ready)
-├── .pre-commit-config.yaml     ← ruff + mypy + trailing-whitespace hooks
-├── .gitignore
-│
-├── configs/
-│   └── dpo_v5e.yaml            ← all training hyperparameters
-│
-├── scripts/
-│   └── tpu_provision.sh        ← provision GCP v5e-8 TPU VM
-│
-├── src/
-│   └── tunix_dpo/
-│       ├── data/
-│       │   ├── parser.py       ← parse_dialogue(), is_valid_pair()  [pure]
-│       │   ├── formatter.py    ← format_dpo(), format_rm()          [pure]
-│       │   └── curate.py       ← CLI: tunix-curate
-│       │
-│       ├── training/
-│       │   ├── config.py       ← dataclasses only, no logic
-│       │   ├── losses.py       ← dpo_loss(), sft_loss()             [pure JAX]
-│       │   ├── dataset.py      ← HHRLHFDataset + DataLoader
-│       │   ├── optimizer.py    ← make_optimizer()
-│       │   ├── logger.py       ← TrajectoryLogger (TensorBoard + JSONL)
-│       │   └── train.py        ← CLI: tunix-train
-│       │
-│       ├── evaluation/
-│       │   ├── stats.py        ← bootstrap_ci(), cohens_h()         [pure]
-│       │   ├── truthfulqa.py   ← MC1, MC2, Binary MC scoring        [pure]
-│       │   ├── toxigen.py      ← ToxigenClassifier, gen/disc        [pure]
-│       │   ├── compare.py      ← compare_truthfulqa/toxigen()       [pure]
-│       │   └── runner.py       ← CLI: tunix-eval
-│       │
-│       └── serving/
-│           ├── schemas.py      ← Pydantic models only, no FastAPI
-│           ├── metrics.py      ← Metrics telemetry class
-│           ├── engine.py       ← VLLMEngine async wrapper
-│           ├── export.py       ← CLI: tunix-export  (Orbax → safetensors + LiteRT)
-│           └── server.py       ← CLI: tunix-serve   (FastAPI app)
-│
-└── tests/
-    ├── conftest.py             ← shared fixtures (no network, no GPU)
-    ├── unit/
-    │   ├── test_data.py        ← parser, formatter
-    │   ├── test_losses.py      ← JAX loss functions
-    │   ├── test_stats.py       ← statistical helpers
-    │   ├── test_schemas.py     ← Pydantic models
-    │   └── test_metrics.py     ← telemetry
-    └── integration/
-        ├── test_curate_pipeline.py  ← end-to-end data curation (mocked HF)
-        └── test_compare.py          ← comparison logic with fixture data
-```
-
----
-
-## Quickstart
-
-### Install
+## Quick start
 
 ```bash
-git clone https://github.com/your-org/tunix-dpo.git
-cd tunix-dpo
-make install        # pip install -e ".[all]" + pre-commit install
-```
+# 1. Install
+pip install -e '.[all]'
 
-### Run the test suite
+# 2. Curate the HH-RLHF dataset
+tunix-curate --format dpo --output_dir ./data
 
-```bash
-make test           # all tests
-make test-unit      # fast, no network, no GPU required
-```
-
-### Phase 1 — Data curation
-
-```bash
-make curate DATA_FORMAT=dpo DATA_SUBSETS="helpful-base harmless-base"
-# Output: ./data/dpo/train.jsonl (~157k rows), ./data/dpo/test.jsonl
-```
-
-Or directly:
-
-```bash
-tunix-curate \
-    --format   dpo \
-    --subsets  helpful-base harmless-base \
-    --output_dir ./data
-```
-
-### Phase 2 — TPU training
-
-```bash
-# Provision GCP v5e-8 (one-time)
-./scripts/tpu_provision.sh --project my-project --zone us-west4-a
-
-# or use Terraform -> infra/terraform/README.md
-
+# 3. Train DPO on TPU
 # Copy files to TPU VM and train
 gcloud compute tpus tpu-vm scp --recurse ./ tunix-dpo-v5e:~/tunix-dpo --zone=us-west4-a
 gcloud compute tpus tpu-vm ssh tunix-dpo-v5e --zone=us-west4-a
-
 # On the TPU VM:
 cd ~/tunix-dpo
 pip install -e ".[training]"
 pip install "jax[tpu]" -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
-
 # Verify  chips are visible
 python -c "import jax; print(len(jax.devices()), 'TPU devices')"
-
-# Train
 tunix-train --config configs/dpo_v5e.yaml
+
+# 4. Benchmark vs base
+tunix-eval --base_model google/gemma-3-1b-it \
+           --tuned_model ./checkpoints/dpo_v5e_run/final \
+           --output_dir ./benchmark_results
+
+# 5. Export for inference
+tunix-export --checkpoint_dir ./checkpoints/dpo_v5e_run/final \
+             --base_model google/gemma-3-1b-it \
+             --output_dir ./exports/tunix_dpo_gemma_3_1b_it
+
+# 6. Serve via OpenAI-compatible API
+tunix-serve --model ./exports/tunix_dpo_gemma_3_1b_it --port 8000
 ```
 
-Override any config key from the CLI:
+## Project layout
+
+```
+tunix_dpo/
+├── src/tunix_dpo/
+│   ├── data/         # parser, formatter, curate CLI
+│   ├── training/     # config, JAX losses, dataset, optimizer, train CLI
+│   ├── evaluation/   # stats, TruthfulQA, ToxiGen, compare, runner CLI
+│   └── serving/      # schemas, metrics, vLLM engine, export, server
+├── tests/            # unit + integration
+├── configs/          # YAML training configs
+├── scripts/          # tpu_provision.sh
+├── pyproject.toml
+├── Makefile
+├── Dockerfile
+└── README.md
+```
+
+The Terraform infrastructure module lives in **`../infra/terraform/`** and provisions the TPU VM,
+GCS bucket, service account, and IAM bindings.
+
+## Five CLI commands
+
+| Command         | Phase                | What it does                                              |
+| --------------- | -------------------- | --------------------------------------------------------- |
+| `tunix-curate`  | 1. Data              | Download HH-RLHF, parse, filter, write JSONL              |
+| `tunix-train`   | 2. Training          | Run DPO on TPU v5e-8                                      |
+| `tunix-eval`    | 3. Benchmarking      | TruthfulQA + ToxiGen vs base, with bootstrap CIs          |
+| `tunix-export`  | 4. Conversion        | JAX/Orbax → HuggingFace safetensors (+ optional LiteRT)   |
+| `tunix-serve`   | 4. Serving           | Start OpenAI-compatible vLLM API server                   |
+
+## Model and zone choices
+
+- **Model:** `google/gemma-3-1b-it` is the text-only 1B-parameter instruction-tuned variant of
+  Gemma 3, with a 32K context window. Loads with `AutoModelForCausalLM` (or `Gemma3ForCausalLM`)
+  in `transformers >= 4.50`.
+- **Zone:** `us-west4-a` is one of the canonical Google Cloud zones for TPU v5e.
+  See [Google's TPU v5e training docs](https://cloud.google.com/tpu/docs/v5e-training)
+  which use this zone in their default examples.
+- **TPU:** v5e-8 (`v5litepod-8` in `gcloud` syntax) — 8 chips, 192 GB HBM total. Holds Gemma 3 1B
+  twice over (policy + frozen reference for DPO) with room to spare for activations.
+- **Cost:** ~$12–16/hour on demand. A typical training run (157 K pairs, 1 epoch)
+  finishes in 3–6 hours, so $50–100 per run.
+
+## Architecture invariants
+
+- **Pure-vs-impure separation.** Every package puts pure functions (`parser.py`, `formatter.py`,
+  `losses.py`, `stats.py`, `truthfulqa.py`, `compare.py`, `schemas.py`, `metrics.py`) in their own
+  module, separated from CLI/orchestration modules. Pure modules require **no** GPU, network, or
+  optional dependencies for unit testing.
+- **DPO prompt invariant.** The parser guarantees the prompt is byte-identical for chosen and
+  rejected responses — DPO has no preference signal otherwise.
+- **Frozen reference.** The training loop keeps the original model weights in `ref_params` and
+  applies `jax.lax.stop_gradient` so gradients only flow through the policy.
+- **Weight transposition.** The exporter automatically transposes Flax `[in, out]` Dense kernels
+  to PyTorch `[out, in]`. Embedding tables and LayerNorm scales are left untransposed.
+
+## Reproducibility
 
 ```bash
-tr
+make test-unit            # ~2 s on CPU, no extras needed
+make test-integration     # ~10 s, mocks HuggingFace
+make lint type            # ruff + mypy
 ```
-
-### Phase 3 — Evaluation
-
-```bash
-# Full benchmark (~2h on CPU, ~20min on GPU)
-make eval BASE_MODEL=google/gemma-3-1b-it TUNED_MODEL=./checkpoints/dpo_v5e_run/final
-
-# Quick smoke test (50 TruthfulQA + 20/group ToxiGen)
-make eval-quick
-```
-
-### Phase 4 — Export & serve
-
-```bash
-# Export JAX weights → HuggingFace safetensors
-make export TUNED_MODEL=./checkpoints/dpo_v5e_run/final EXPORT_DIR=./exports/tunix_dpo
-
-# (Optional) also export LiteRT INT8 flatbuffer
-make export-litert
-
-# Launch vLLM inference server
-make serve
-
-# Test it
-curl http://localhost:8000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -d '{"messages":[{"role":"user","content":"Do vaccines cause autism?"}],"max_tokens":200}'
-```
-
-### Docker
+## Docker
 
 ```bash
 make docker-build
@@ -184,36 +122,9 @@ make docker-push GCP_PROJECT=my-project
 gcloud run deploy tunix-dpo \
   --image gcr.io/my-project/tunix-dpo-serve \
   --gpu 1 --gpu-type nvidia-l4 \
-  --memory 32Gi --cpu 8 --port 8000 --allow-unauthenticated
+  --memory 32Gi --cpu 8 --port 8000 --allow-unauthenticated          # ruff + mypy
 ```
-
----
-
-## Entry points
-
-After `pip install -e .`, the following commands are available:
-
-| Command | Module | Description |
-|---------|--------|-------------|
-| `tunix-curate` | `tunix_dpo.data.curate` | Curate HH-RLHF → DPO / RM JSONL |
-| `tunix-train` | `tunix_dpo.training.train` | DPO training on TPU |
-| `tunix-eval` | `tunix_dpo.evaluation.runner` | TruthfulQA + ToxiGen evaluation |
-| `tunix-export` | `tunix_dpo.serving.export` | Export JAX weights → safetensors + LiteRT |
-| `tunix-serve` | `tunix_dpo.serving.server` | vLLM OpenAI-compatible API server |
-
----
-
-## Design principles
-
-Each module has exactly one reason to change:
-
-- `parser.py`, `formatter.py`, `losses.py`, `stats.py`, `truthfulqa.py`, `toxigen.py`, `compare.py`, `schemas.py`, `metrics.py` — pure functions / data structures, no I/O, fully unit-testable.
-- `curate.py`, `train.py`, `runner.py`, `export.py`, `server.py` — orchestration and I/O only; no business logic inline.
-- `config.py` — dataclasses with defaults only, no methods.
-- `engine.py` — one external dependency (vLLM) isolated behind a clean async interface.
-
----
 
 ## License
 
-Apache 2.0. See [LICENSE](LICENSE).
+Apache-2.0
