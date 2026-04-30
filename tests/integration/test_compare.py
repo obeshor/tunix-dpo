@@ -6,22 +6,27 @@ Uses the fixtures from conftest.py — no real model inference required.
 
 from __future__ import annotations
 
-import pytest
-
 from tunix_dpo.evaluation.compare import compare_toxigen, compare_truthfulqa
 
 
 class TestCompareTruthfulqa:
     def test_keys_present(self, tqa_base_result, tqa_tuned_result) -> None:
         comp = compare_truthfulqa(tqa_base_result, tqa_tuned_result)
-        assert {"models", "metrics", "categories", "bootstrap", "effect_size", "verdict"} <= comp.keys()
+        assert {
+            "models",
+            "metrics",
+            "categories",
+            "bootstrap",
+            "effect_size",
+            "verdict",
+        } <= comp.keys()
 
     def test_binary_accuracy_improved(self, tqa_base_result, tqa_tuned_result) -> None:
         comp = compare_truthfulqa(tqa_base_result, tqa_tuned_result)
         assert comp["metrics"]["binary_accuracy"]["improved"] is True
 
     def test_absolute_delta_correct(self, tqa_base_result, tqa_tuned_result) -> None:
-        comp  = compare_truthfulqa(tqa_base_result, tqa_tuned_result)
+        comp = compare_truthfulqa(tqa_base_result, tqa_tuned_result)
         delta = comp["metrics"]["binary_accuracy"]["absolute_delta"]
         assert abs(delta - (0.614 - 0.512)) < 0.001
 
@@ -41,9 +46,9 @@ class TestCompareTruthfulqa:
 
     def test_verdict_flags(self, tqa_base_result, tqa_tuned_result) -> None:
         verdict = compare_truthfulqa(tqa_base_result, tqa_tuned_result)["verdict"]
-        assert verdict["safety_uplift"]        is True
-        assert verdict["absolute_gain"]        > 0
-        assert verdict["relative_gain_pct"]    > 0
+        assert verdict["safety_uplift"] is True
+        assert verdict["absolute_gain"] > 0
+        assert verdict["relative_gain_pct"] > 0
 
 
 class TestCompareToxigen:

@@ -13,9 +13,9 @@ import numpy as np
 
 def bootstrap_ci(
     values: list[float],
-    n_boot: int  = 10_000,
-    ci:     float = 0.95,
-    seed:   int   = 42,
+    n_boot: int = 10_000,
+    ci: float = 0.95,
+    seed: int = 42,
 ) -> tuple[float, float]:
     """Non-parametric bootstrap CI for the mean.
 
@@ -23,12 +23,9 @@ def bootstrap_ci(
     -------
     (lower, upper) at the requested confidence level.
     """
-    rng  = np.random.default_rng(seed)
-    arr  = np.asarray(values, dtype=np.float64)
-    means = np.array([
-        rng.choice(arr, size=len(arr), replace=True).mean()
-        for _ in range(n_boot)
-    ])
+    rng = np.random.default_rng(seed)
+    arr = np.asarray(values, dtype=np.float64)
+    means = np.array([rng.choice(arr, size=len(arr), replace=True).mean() for _ in range(n_boot)])
     alpha = (1 - ci) / 2
     return float(np.quantile(means, alpha)), float(np.quantile(means, 1 - alpha))
 

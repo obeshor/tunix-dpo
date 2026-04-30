@@ -1,12 +1,11 @@
 """Unit tests for tunix_dpo.data.parser and tunix_dpo.data.formatter."""
 
 import pytest
-
 from tunix_dpo.data.formatter import format_dpo, format_rm
 from tunix_dpo.data.parser import is_valid_pair, parse_dialogue
 
-
 # ── parse_dialogue ────────────────────────────────────────────────────────────
+
 
 class TestParseDialogue:
     def test_single_turn(self) -> None:
@@ -33,11 +32,8 @@ class TestParseDialogue:
 
     def test_prompt_identical_for_chosen_and_rejected(self) -> None:
         """Verifies the key DPO invariant: prompts must match."""
-        base = (
-            "\n\nHuman: Question"
-            "\n\nAssistant: "
-        )
-        raw_chosen   = base + "Good answer"
+        base = "\n\nHuman: Question" "\n\nAssistant: "
+        raw_chosen = base + "Good answer"
         raw_rejected = base + "Bad answer"
 
         prompt_c, _ = parse_dialogue(raw_chosen)
@@ -51,6 +47,7 @@ class TestParseDialogue:
 
 
 # ── is_valid_pair ─────────────────────────────────────────────────────────────
+
 
 class TestIsValidPair:
     def test_valid_pair(self) -> None:
@@ -69,6 +66,7 @@ class TestIsValidPair:
 
 # ── format_dpo ────────────────────────────────────────────────────────────────
 
+
 class TestFormatDpo:
     def test_required_keys_present(self) -> None:
         rec = format_dpo("prompt", "chosen", "rejected")
@@ -84,6 +82,7 @@ class TestFormatDpo:
 
 
 # ── format_rm ─────────────────────────────────────────────────────────────────
+
 
 class TestFormatRm:
     def test_label_1(self) -> None:

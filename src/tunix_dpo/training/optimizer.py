@@ -10,7 +10,6 @@ Returns an optax GradientTransformation composed of:
 from __future__ import annotations
 
 import optax
-
 from tunix_dpo.training.config import TrainingConfig
 
 
@@ -36,9 +35,7 @@ def make_optimizer(cfg: TrainingConfig, total_steps: int) -> optax.GradientTrans
         )
     elif cfg.lr_schedule == "linear":
         ramp = optax.linear_schedule(0.0, cfg.learning_rate, warmup)
-        decay = optax.linear_schedule(
-            cfg.learning_rate, 0.0, total_steps - warmup
-        )
+        decay = optax.linear_schedule(cfg.learning_rate, 0.0, total_steps - warmup)
         schedule = optax.join_schedules([ramp, decay], boundaries=[warmup])
     elif cfg.lr_schedule == "constant":
         schedule = cfg.learning_rate  # type: ignore[assignment]

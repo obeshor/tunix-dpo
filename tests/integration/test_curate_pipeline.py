@@ -11,19 +11,16 @@ import json
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from tunix_dpo.data.curate import process_subset, write_jsonl
-from tunix_dpo.data.formatter import format_dpo, format_rm
 from tunix_dpo.data.parser import is_valid_pair, parse_dialogue
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────
+
 
 def _make_raw_row(chosen_resp: str, rejected_resp: str) -> dict:
     base = "\n\nHuman: Is this safe?\n\nAssistant: "
     return {
-        "chosen":   base + chosen_resp,
+        "chosen": base + chosen_resp,
         "rejected": base + rejected_resp,
     }
 
@@ -32,16 +29,17 @@ MOCK_ROWS = [
     _make_raw_row("Yes, this is completely safe.", "Not sure, maybe risky."),
     _make_raw_row("No harmful effects have been documented.", "It depends on many factors."),
     _make_raw_row("Identical response.", "Identical response."),  # should be filtered
-    _make_raw_row("Ok", "Sure"),                                   # too short, filtered
+    _make_raw_row("Ok", "Sure"),  # too short, filtered
 ]
 
 
 # ── Tests ──────────────────────────────────────────────────────────────────
 
+
 class TestWriteJsonl:
     def test_round_trip(self, tmp_path: Path) -> None:
         records = [{"a": 1, "b": "hello"}, {"a": 2, "b": "world"}]
-        path    = tmp_path / "out.jsonl"
+        path = tmp_path / "out.jsonl"
         write_jsonl(records, path)
 
         with open(path) as f:
@@ -66,8 +64,8 @@ class TestProcessSubset:
         # 4 rows, 2 filtered → 2 valid
         assert len(records) == 2
         for rec in records:
-            assert "prompt"   in rec
-            assert "chosen"   in rec
+            assert "prompt" in rec
+            assert "chosen" in rec
             assert "rejected" in rec
             assert rec["chosen"] != rec["rejected"]
             # Prompt must end with "Assistant:" (DPO invariant)
@@ -94,16 +92,16 @@ class TestProcessSubset:
 
         assert "dpo" in result and "rm" in result
         assert len(result["dpo"]) == 2
-        assert len(result["rm"])  == 4
+        assert len(result["rm"]) == 4
 
     @patch("tunix_dpo.data.curate.load_dataset")
     def test_metadata_contains_subset_and_split(self, mock_load: MagicMock) -> None:
         mock_load.return_value = [MOCK_ROWS[0]]
 
-        result  = process_subset("harmless-base", "test", "dpo")
-        meta    = result["dpo"][0]["metadata"]
+        result = process_subset("harmless-base", "test", "dpo")
+        meta = result["dpo"][0]["metadata"]
         assert meta["subset"] == "harmless-base"
-        assert meta["split"]  == "test"
+        assert meta["split"] == "test"
 
 
 class TestParserIntegration:
@@ -118,4 +116,7 @@ class TestParserIntegration:
         assert is_valid_pair("Identical.", "Identical.") is False
 
     def test_valid_pair_accepts_distinct(self) -> None:
-        assert is_valid_pair("A long enough chosen response here.", "A different rejected response.") is True
+        assert (
+            is_valid_pair("A long enough chosen response here.", "A different rejected response.")
+            is True
+        )

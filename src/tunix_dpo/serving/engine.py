@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from typing import AsyncGenerator, Optional
+from collections.abc import AsyncGenerator
 
 from tunix_dpo.serving.metrics import Metrics
 
@@ -45,24 +45,24 @@ class VLLMEngine:
 
     def __init__(
         self,
-        model_path:              str,
-        dtype:                   str,
-        max_model_len:           int,
-        gpu_memory_utilization:  float,
-        tensor_parallel_size:    int,
-        quantization:            Optional[str],
-        max_num_seqs:            int,
-        metrics:                 Metrics,
+        model_path: str,
+        dtype: str,
+        max_model_len: int,
+        gpu_memory_utilization: float,
+        tensor_parallel_size: int,
+        quantization: str | None,
+        max_num_seqs: int,
+        metrics: Metrics,
     ) -> None:
-        self._engine         = None
+        self._engine = None
         self._SamplingParams = None
-        self._metrics        = metrics
-        self.model_path      = model_path
-        self.ready           = False
+        self._metrics = metrics
+        self.model_path = model_path
+        self.ready = False
 
         try:
-            from vllm import AsyncEngineArgs, AsyncLLMEngine       # type: ignore[import]
-            from vllm.sampling_params import SamplingParams        # type: ignore[import]
+            from vllm import AsyncEngineArgs, AsyncLLMEngine  # type: ignore[import]
+            from vllm.sampling_params import SamplingParams  # type: ignore[import]
 
             engine_args = AsyncEngineArgs(
                 model=model_path,
@@ -76,9 +76,9 @@ class VLLMEngine:
                 disable_log_requests=True,
                 max_num_seqs=max_num_seqs,
             )
-            self._engine         = AsyncLLMEngine.from_engine_args(engine_args)
+            self._engine = AsyncLLMEngine.from_engine_args(engine_args)
             self._SamplingParams = SamplingParams
-            self.ready           = True
+            self.ready = True
             log.info("vLLM engine ready: %s", model_path)
 
         except ImportError:
@@ -91,15 +91,15 @@ class VLLMEngine:
 
     async def generate(
         self,
-        prompt:             str,
-        max_tokens:         int,
-        temperature:        float,
-        top_p:              float,
-        top_k:              int,
+        prompt: str,
+        max_tokens: int,
+        temperature: float,
+        top_p: float,
+        top_k: int,
         repetition_penalty: float,
-        stop:               Optional[list[str]],
-        seed:               Optional[int],
-        request_id:         str,
+        stop: list[str] | None,
+        seed: int | None,
+        request_id: str,
     ) -> AsyncGenerator[tuple[str, bool], None]:
         """Yield (text_delta, is_final) pairs.
 
@@ -127,19 +127,19 @@ class VLLMEngine:
             seed=seed,
         )
 
-        prev_len     = 0
+        prev_len = 0
         final_output = None
 
         async for req_out in self._engine.generate(prompt, sampling, request_id):
             if req_out.outputs:
-                out      = req_out.outputs[0]
-                delta    = out.text[prev_len:]
+                out = req_out.outputs[0]
+                delta = out.text[prev_len:]
                 prev_len = len(out.text)
                 is_final = out.finish_reason is not None
                 yield delta, is_final
                 final_output = out
 
-        lat      = (time.perf_counter() - t0) * 1000
+        lat = (time.perf_counter() - t0) * 1000
         n_tokens = len(final_output.token_ids) if final_output else 0
         self._metrics.record(n_tokens, lat)
         log.debug("[%s] %d tokens  %.0f ms", request_id, n_tokens, lat)

@@ -2,7 +2,6 @@
 
 import pytest
 from pydantic import ValidationError
-
 from tunix_dpo.serving.schemas import (
     BenchmarkRequest,
     ChatCompletionRequest,

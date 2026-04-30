@@ -28,8 +28,8 @@ def format_dpo(
     }
     """
     record: dict[str, Any] = {
-        "prompt":   prompt,
-        "chosen":   chosen,
+        "prompt": prompt,
+        "chosen": chosen,
         "rejected": rejected,
     }
     if metadata:
@@ -57,9 +57,9 @@ def format_rm(
     if label not in (0, 1):
         raise ValueError(f"label must be 0 or 1, got {label!r}")
     record: dict[str, Any] = {
-        "prompt":   prompt,
+        "prompt": prompt,
         "response": response,
-        "label":    label,
+        "label": label,
     }
     if metadata:
         record["metadata"] = metadata

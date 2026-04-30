@@ -41,7 +41,7 @@ def parse_dialogue(raw_text: str) -> tuple[str, str]:
     turns: list[dict[str, str]] = []
     i = 0
     while i + 1 < len(parts):
-        role    = parts[i].strip()
+        role = parts[i].strip()
         content = parts[i + 1].strip()
         turns.append({"role": role, "content": content})
         i += 2

@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 
 try:
     from tensorboardX import SummaryWriter  # type: ignore[import]
+
     _HAS_TB = True
 except ImportError:
     _HAS_TB = False
@@ -33,7 +34,7 @@ class TrajectoryLogger:
     """
 
     def __init__(self, log_dir: str | Path) -> None:
-        self._dir  = Path(log_dir)
+        self._dir = Path(log_dir)
         self._dir.mkdir(parents=True, exist_ok=True)
         self._jsonl = self._dir / "metrics.jsonl"
         self._writer = SummaryWriter(str(self._dir)) if _HAS_TB else None
@@ -68,7 +69,7 @@ class TrajectoryLogger:
             self._writer.close()
 
     # Context-manager support
-    def __enter__(self) -> "TrajectoryLogger":
+    def __enter__(self) -> TrajectoryLogger:
         return self
 
     def __exit__(self, *_: object) -> None:

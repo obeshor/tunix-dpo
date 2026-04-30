@@ -15,8 +15,8 @@ from typing import Any
 import numpy as np
 from datasets import load_dataset
 from torch.utils.data import DataLoader, Dataset
-from transformers import PreTrainedTokenizerBase
 from tqdm import tqdm
+from transformers import PreTrainedTokenizerBase
 
 log = logging.getLogger(__name__)
 
@@ -38,7 +38,7 @@ class HHRLHFDataset(Dataset):
         max_len: int,
     ) -> None:
         self.tokenizer = tokenizer
-        self.max_len   = max_len
+        self.max_len = max_len
         raw = load_dataset("json", data_files=str(path), split="train")
         log.info("Tokenising %s (%d rows)…", Path(path).name, len(raw))
         self._data = [self._encode(row) for row in tqdm(raw, leave=False)]
@@ -53,21 +53,21 @@ class HHRLHFDataset(Dataset):
                 return_tensors="np",
             )
 
-        chosen_enc   = tok(row["prompt"] + " " + row["chosen"])
+        chosen_enc = tok(row["prompt"] + " " + row["chosen"])
         rejected_enc = tok(row["prompt"] + " " + row["rejected"])
-        prompt_len   = len(self.tokenizer(row["prompt"])["input_ids"])
+        prompt_len = len(self.tokenizer(row["prompt"])["input_ids"])
 
         def make_labels(ids: np.ndarray) -> np.ndarray:
             labels = ids.copy()
-            labels[:, :prompt_len]                           = -100
-            labels[ids == self.tokenizer.pad_token_id]       = -100
+            labels[:, :prompt_len] = -100
+            labels[ids == self.tokenizer.pad_token_id] = -100
             return labels
 
         return {
-            "chosen_input_ids":   chosen_enc["input_ids"][0],
-            "chosen_labels":      make_labels(chosen_enc["input_ids"])[0],
+            "chosen_input_ids": chosen_enc["input_ids"][0],
+            "chosen_labels": make_labels(chosen_enc["input_ids"])[0],
             "rejected_input_ids": rejected_enc["input_ids"][0],
-            "rejected_labels":    make_labels(rejected_enc["input_ids"])[0],
+            "rejected_labels": make_labels(rejected_enc["input_ids"])[0],
         }
 
     def __len__(self) -> int:

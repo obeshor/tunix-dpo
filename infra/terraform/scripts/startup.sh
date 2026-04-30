@@ -1,33 +1,42 @@
-# ─────────────────────────────────────────────────────────────────────────────
-# This script runs once on the TPU VM immediately after it boots.
-# It installs the Python environment required for Phase 2 training.
-#
-# To use this with Terraform, add a metadata_startup_script attribute to
-# google_tpu_v2_vm.training (see main.tf comment below).
-# ─────────────────────────────────────────────────────────────────────────────
-set -euo pipefail
+#!/usr/bin/env bash
+# ─── TPU VM startup script ──────────────────────────────────────────────────
+# Runs on first boot. Installs Python 3.11, JAX with TPU support, and the
+# rest of the Tunix DPO training dependencies.
+# ────────────────────────────────────────────────────────────────────────────
 
-LOG="/var/log/tunix-startup.log"
-exec > >(tee -a "$LOG") 2>&1
+set -euxo pipefail
 
-echo "=== Tunix DPO startup — $(date) ==="
+# Wait until APT is ready (TPU images sometimes lag at boot)
+until sudo apt-get update -qq; do sleep 5; done
 
-# 1. Upgrade pip
-pip install --upgrade pip -q
+sudo apt-get install -y --no-install-recommends \
+  python3.11 python3.11-venv python3.11-dev \
+  python3-pip git curl ca-certificates
 
-# 2. JAX with TPU support (must use the special release index)
-pip install "jax[tpu]" \
-  -f https://storage.googleapis.com/jax-releases/libtpu_releases.html -q
+# Tunix DPO uses Python 3.11
+sudo update-alternatives --install /usr/bin/python python /usr/bin/python3.11 1
+sudo update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.11 1
 
-# 3. Training stack
-pip install flax optax orbax-checkpoint tunix -q
+# Set up a virtual environment for the training user
+sudo -u "$(logname)" bash <<'EOF'
+set -e
+python3.11 -m venv ~/venv
+source ~/venv/bin/activate
+pip install --upgrade pip
 
-# 4. Verify 8 TPU chips are visible
-python3 -c "
-import jax
-devices = jax.devices()
-assert len(devices) == 8, f'Expected 8 v5e chips, got {len(devices)}'
-print(f'TPU check passed: {len(devices)} devices ({devices[0].device_kind})')
-"
+# JAX with TPU support
+pip install 'jax[tpu]' \
+  -f https://storage.googleapis.com/jax-releases/libtpu_releases.html
 
-echo "=== Startup complete — $(date) ==="
+# Flax + Optax + Orbax for training
+pip install flax optax orbax-checkpoint tensorboard
+
+# Transformers (>= 4.50 required for Gemma 3)
+pip install 'transformers>=4.50' datasets tokenizers huggingface-hub
+
+# Project deps
+pip install pyyaml click pydantic numpy scipy tqdm
+
+echo "Startup complete. JAX devices:"
+python -c 'import jax; print(jax.devices())'
+EOF

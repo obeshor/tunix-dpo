@@ -29,7 +29,6 @@ import logging
 import re
 import tempfile
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 
@@ -38,27 +37,36 @@ log = logging.getLogger(__name__)
 # ── Flax → HuggingFace key remap patterns ────────────────────────────────────
 
 _REMAP: list[tuple[str, str]] = [
-    (r"^embed_tokens\.embedding$",                  "model.embed_tokens.weight"),
-    (r"^model\.norm\.scale$",                       "model.norm.weight"),
-    (r"^layers\.(\d+)\.input_layernorm\.scale$",    r"model.layers.\1.input_layernorm.weight"),
-    (r"^layers\.(\d+)\.post_attention_layernorm\.scale$", r"model.layers.\1.post_attention_layernorm.weight"),
-    (r"^layers\.(\d+)\.pre_feedforward_layernorm\.scale$", r"model.layers.\1.pre_feedforward_layernorm.weight"),
-    (r"^layers\.(\d+)\.post_feedforward_layernorm\.scale$", r"model.layers.\1.post_feedforward_layernorm.weight"),
+    (r"^embed_tokens\.embedding$", "model.embed_tokens.weight"),
+    (r"^model\.norm\.scale$", "model.norm.weight"),
+    (r"^layers\.(\d+)\.input_layernorm\.scale$", r"model.layers.\1.input_layernorm.weight"),
+    (
+        r"^layers\.(\d+)\.post_attention_layernorm\.scale$",
+        r"model.layers.\1.post_attention_layernorm.weight",
+    ),
+    (
+        r"^layers\.(\d+)\.pre_feedforward_layernorm\.scale$",
+        r"model.layers.\1.pre_feedforward_layernorm.weight",
+    ),
+    (
+        r"^layers\.(\d+)\.post_feedforward_layernorm\.scale$",
+        r"model.layers.\1.post_feedforward_layernorm.weight",
+    ),
     (r"^layers\.(\d+)\.self_attn\.q_proj\.kernel$", r"model.layers.\1.self_attn.q_proj.weight"),
     (r"^layers\.(\d+)\.self_attn\.k_proj\.kernel$", r"model.layers.\1.self_attn.k_proj.weight"),
     (r"^layers\.(\d+)\.self_attn\.v_proj\.kernel$", r"model.layers.\1.self_attn.v_proj.weight"),
     (r"^layers\.(\d+)\.self_attn\.o_proj\.kernel$", r"model.layers.\1.self_attn.o_proj.weight"),
-    (r"^layers\.(\d+)\.self_attn\.q_proj\.bias$",   r"model.layers.\1.self_attn.q_proj.bias"),
-    (r"^layers\.(\d+)\.self_attn\.k_proj\.bias$",   r"model.layers.\1.self_attn.k_proj.bias"),
-    (r"^layers\.(\d+)\.self_attn\.v_proj\.bias$",   r"model.layers.\1.self_attn.v_proj.bias"),
-    (r"^layers\.(\d+)\.mlp\.gate_proj\.kernel$",    r"model.layers.\1.mlp.gate_proj.weight"),
-    (r"^layers\.(\d+)\.mlp\.up_proj\.kernel$",      r"model.layers.\1.mlp.up_proj.weight"),
-    (r"^layers\.(\d+)\.mlp\.down_proj\.kernel$",    r"model.layers.\1.mlp.down_proj.weight"),
-    (r"^lm_head\.kernel$",                          "lm_head.weight"),
+    (r"^layers\.(\d+)\.self_attn\.q_proj\.bias$", r"model.layers.\1.self_attn.q_proj.bias"),
+    (r"^layers\.(\d+)\.self_attn\.k_proj\.bias$", r"model.layers.\1.self_attn.k_proj.bias"),
+    (r"^layers\.(\d+)\.self_attn\.v_proj\.bias$", r"model.layers.\1.self_attn.v_proj.bias"),
+    (r"^layers\.(\d+)\.mlp\.gate_proj\.kernel$", r"model.layers.\1.mlp.gate_proj.weight"),
+    (r"^layers\.(\d+)\.mlp\.up_proj\.kernel$", r"model.layers.\1.mlp.up_proj.weight"),
+    (r"^layers\.(\d+)\.mlp\.down_proj\.kernel$", r"model.layers.\1.mlp.down_proj.weight"),
+    (r"^lm_head\.kernel$", "lm_head.weight"),
 ]
 
 
-def _remap_key(key: str) -> Optional[str]:
+def _remap_key(key: str) -> str | None:
     for pattern, replacement in _REMAP:
         new_key = re.sub(pattern, replacement, key)
         if new_key != key:
@@ -68,12 +76,13 @@ def _remap_key(key: str) -> Optional[str]:
 
 # ── Checkpoint loading ────────────────────────────────────────────────────────
 
+
 def _load_orbax(ckpt_dir: Path) -> dict[str, np.ndarray]:
     import orbax.checkpoint as ocp  # type: ignore[import]
 
     log.info("Loading Orbax checkpoint: %s", ckpt_dir)
     checkpointer = ocp.StandardCheckpointer()
-    restored     = checkpointer.restore(ckpt_dir)
+    restored = checkpointer.restore(ckpt_dir)
     flat: dict[str, np.ndarray] = {}
 
     def _flatten(node: object, prefix: str = "") -> None:
@@ -90,10 +99,11 @@ def _load_orbax(ckpt_dir: Path) -> dict[str, np.ndarray]:
 
 # ── State dict builder ────────────────────────────────────────────────────────
 
+
 def _build_state_dict(flat: dict[str, np.ndarray]) -> dict:
     import torch  # type: ignore[import]
 
-    state_dict: dict[str, "torch.Tensor"] = {}
+    state_dict: dict[str, torch.Tensor] = {}
     skipped: list[str] = []
 
     for flax_key, arr in flat.items():
@@ -114,13 +124,14 @@ def _build_state_dict(flat: dict[str, np.ndarray]) -> dict:
 
 # ── Safetensors writer ────────────────────────────────────────────────────────
 
+
 def _write_safetensors(state_dict: dict, output_dir: Path, shard_gb: float) -> None:
     from safetensors.torch import save_file  # type: ignore[import]
 
     output_dir.mkdir(parents=True, exist_ok=True)
-    max_bytes = int(shard_gb * 1024 ** 3)
-    shards: list[dict]  = [{}]
-    sizes:  list[int]   = [0]
+    max_bytes = int(shard_gb * 1024**3)
+    shards: list[dict] = [{}]
+    sizes: list[int] = [0]
 
     for key, tensor in state_dict.items():
         nb = tensor.nbytes
@@ -128,7 +139,7 @@ def _write_safetensors(state_dict: dict, output_dir: Path, shard_gb: float) -> N
             shards.append({})
             sizes.append(0)
         shards[-1][key] = tensor
-        sizes[-1]      += nb
+        sizes[-1] += nb
 
     weight_map: dict[str, str] = {}
     total = 0
@@ -137,11 +148,11 @@ def _write_safetensors(state_dict: dict, output_dir: Path, shard_gb: float) -> N
         fname = "model.safetensors"
         save_file(shards[0], output_dir / fname, metadata={"format": "pt"})
         weight_map = {k: fname for k in shards[0]}
-        total      = sizes[0]
+        total = sizes[0]
         log.info("  Single shard: %s  (%.2f GB)", fname, total / 1e9)
     else:
         n = len(shards)
-        for i, (shard, nb) in enumerate(zip(shards, sizes)):
+        for i, (shard, nb) in enumerate(zip(shards, sizes, strict=False)):
             fname = f"model-{i+1:05d}-of-{n:05d}.safetensors"
             save_file(shard, output_dir / fname, metadata={"format": "pt"})
             for k in shard:
@@ -156,6 +167,7 @@ def _write_safetensors(state_dict: dict, output_dir: Path, shard_gb: float) -> N
 
 # ── Config + tokenizer ────────────────────────────────────────────────────────
 
+
 def _write_hf_config(base_model: str, output_dir: Path) -> None:
     from transformers import AutoConfig, AutoTokenizer  # type: ignore[import]
 
@@ -164,31 +176,43 @@ def _write_hf_config(base_model: str, output_dir: Path) -> None:
     tok = AutoTokenizer.from_pretrained(base_model)
     tok.save_pretrained(output_dir)
     gen_cfg = {
-        "bos_token_id": tok.bos_token_id, "eos_token_id": tok.eos_token_id,
-        "max_new_tokens": 512, "temperature": 0.7, "top_p": 0.9,
-        "repetition_penalty": 1.1, "_from_model_config": True,
+        "bos_token_id": tok.bos_token_id,
+        "eos_token_id": tok.eos_token_id,
+        "max_new_tokens": 512,
+        "temperature": 0.7,
+        "top_p": 0.9,
+        "repetition_penalty": 1.1,
+        "_from_model_config": True,
     }
     (output_dir / "generation_config.json").write_text(json.dumps(gen_cfg, indent=2))
 
 
 # ── Verification ──────────────────────────────────────────────────────────────
 
+
 def _verify(output_dir: Path) -> None:
     import torch  # type: ignore[import]
     from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore[import]
 
     log.info("Verifying export via HuggingFace load…")
-    model = AutoModelForCausalLM.from_pretrained(output_dir, torch_dtype=torch.bfloat16, device_map="cpu")
-    tok   = AutoTokenizer.from_pretrained(output_dir)
-    ids   = tok("Hello world", return_tensors="pt")
+    model = AutoModelForCausalLM.from_pretrained(
+        output_dir, torch_dtype=torch.bfloat16, device_map="cpu"
+    )
+    tok = AutoTokenizer.from_pretrained(output_dir)
+    ids = tok("Hello world", return_tensors="pt")
     with torch.no_grad():
         out = model(**ids)
     assert out.logits.shape[-1] == model.config.vocab_size
-    log.info("  Params: %.2fB  logit shape: %s  ✓", sum(p.numel() for p in model.parameters()) / 1e9, tuple(out.logits.shape))
+    log.info(
+        "  Params: %.2fB  logit shape: %s  ✓",
+        sum(p.numel() for p in model.parameters()) / 1e9,
+        tuple(out.logits.shape),
+    )
     del model
 
 
 # ── LiteRT export ─────────────────────────────────────────────────────────────
+
 
 def _export_litert(flat: dict[str, np.ndarray], output_path: Path, quant: str) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -196,17 +220,21 @@ def _export_litert(flat: dict[str, np.ndarray], output_path: Path, quant: str) -
         import ai_edge_torch  # type: ignore[import]
         import torch
         from transformers import AutoModelForCausalLM
+
         log.info("LiteRT export via ai_edge_torch (quant=%s)", quant)
-        model = AutoModelForCausalLM.from_pretrained(output_path.parent, torch_dtype=torch.float32, device_map="cpu")
+        model = AutoModelForCausalLM.from_pretrained(
+            output_path.parent, torch_dtype=torch.float32, device_map="cpu"
+        )
         model.eval()
         sample = (torch.zeros(1, 16, dtype=torch.long),)
         edge_model = ai_edge_torch.convert(model, sample)
         edge_model.export(str(output_path))
     except ImportError:
         import tensorflow as tf  # type: ignore[import]
+
         log.info("LiteRT fallback via TFLite converter (quant=%s)", quant)
         embed_key = next((k for k in flat if "embed_tokens" in k), None)
-        embed_w   = flat.get(embed_key, np.zeros((256000, 2048), np.float32))
+        embed_w = flat.get(embed_key, np.zeros((256000, 2048), np.float32))
 
         class _Embed(tf.Module):
             def __init__(self, w: np.ndarray) -> None:
@@ -220,7 +248,10 @@ def _export_litert(flat: dict[str, np.ndarray], output_path: Path, quant: str) -
         with tempfile.TemporaryDirectory() as tmp:
             tf.saved_model.save(_Embed(embed_w), tmp)
             conv = tf.lite.TFLiteConverter.from_saved_model(tmp)
-            conv.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS, tf.lite.OpsSet.SELECT_TF_OPS]
+            conv.target_spec.supported_ops = [
+                tf.lite.OpsSet.TFLITE_BUILTINS,
+                tf.lite.OpsSet.SELECT_TF_OPS,
+            ]
             if quant in ("int8", "float16"):
                 conv.optimizations = [tf.lite.Optimize.DEFAULT]
             if quant == "float16":
@@ -233,24 +264,27 @@ def _export_litert(flat: dict[str, np.ndarray], output_path: Path, quant: str) -
 
 # ── Main ──────────────────────────────────────────────────────────────────────
 
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
-    parser = argparse.ArgumentParser(description="Export JAX/Orbax DPO checkpoint → HuggingFace + LiteRT.")
+    parser = argparse.ArgumentParser(
+        description="Export JAX/Orbax DPO checkpoint → HuggingFace + LiteRT."
+    )
     parser.add_argument("--checkpoint_dir", required=True)
-    parser.add_argument("--base_model",     required=True)
-    parser.add_argument("--output_dir",     required=True)
-    parser.add_argument("--shard_size_gb",  type=float, default=4.0)
-    parser.add_argument("--skip_verify",    action="store_true")
-    parser.add_argument("--export_litert",  action="store_true")
-    parser.add_argument("--litert_output",  default=None)
-    parser.add_argument("--litert_quant",   choices=["none", "float16", "int8"], default="int8")
+    parser.add_argument("--base_model", required=True)
+    parser.add_argument("--output_dir", required=True)
+    parser.add_argument("--shard_size_gb", type=float, default=4.0)
+    parser.add_argument("--skip_verify", action="store_true")
+    parser.add_argument("--export_litert", action="store_true")
+    parser.add_argument("--litert_output", default=None)
+    parser.add_argument("--litert_quant", choices=["none", "float16", "int8"], default="int8")
     args = parser.parse_args(argv)
 
-    ckpt_dir   = Path(args.checkpoint_dir)
+    ckpt_dir = Path(args.checkpoint_dir)
     output_dir = Path(args.output_dir)
 
-    flat       = _load_orbax(ckpt_dir)
+    flat = _load_orbax(ckpt_dir)
     state_dict = _build_state_dict(flat)
     _write_safetensors(state_dict, output_dir, args.shard_size_gb)
     _write_hf_config(args.base_model, output_dir)

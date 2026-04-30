@@ -21,18 +21,14 @@ from __future__ import annotations
 import argparse
 import json
 import logging
-import time
 from dataclasses import asdict
 from pathlib import Path
 
 import jax
 import jax.numpy as jnp
-import numpy as np
-import optax
 import orbax.checkpoint as ocp
 from flax.training import train_state
 from transformers import AutoTokenizer
-
 from tunix_dpo.training.config import Config
 from tunix_dpo.training.dataset import HHRLHFDataset, make_dataloader
 from tunix_dpo.training.logger import TrajectoryLogger
@@ -44,6 +40,7 @@ log = logging.getLogger(__name__)
 
 # ── pmap training step ────────────────────────────────────────────────────────
 
+
 def make_train_step(
     beta: float,
     sft_weight: float,
@@ -54,13 +51,13 @@ def make_train_step(
     @jax.jit
     def _step(state: train_state.TrainState, ref_params: dict, batch: dict) -> tuple:
         def loss_fn(params: dict) -> tuple[jnp.ndarray, dict]:
-            chosen_logits   = state.apply_fn({"params": params}, batch["chosen_input_ids"]).logits
+            chosen_logits = state.apply_fn({"params": params}, batch["chosen_input_ids"]).logits
             rejected_logits = state.apply_fn({"params": params}, batch["rejected_input_ids"]).logits
 
-            policy_chosen_lp   = log_probs_from_logits(chosen_logits,   batch["chosen_labels"])
+            policy_chosen_lp = log_probs_from_logits(chosen_logits, batch["chosen_labels"])
             policy_rejected_lp = log_probs_from_logits(rejected_logits, batch["rejected_labels"])
 
-            ref_chosen_lp   = jax.lax.stop_gradient(
+            ref_chosen_lp = jax.lax.stop_gradient(
                 log_probs_from_logits(
                     state.apply_fn({"params": ref_params}, batch["chosen_input_ids"]).logits,
                     batch["chosen_labels"],
@@ -74,30 +71,29 @@ def make_train_step(
             )
 
             d_loss, chosen_r, rejected_r = dpo_loss(
-                policy_chosen_lp, policy_rejected_lp,
-                ref_chosen_lp,    ref_rejected_lp,
+                policy_chosen_lp,
+                policy_rejected_lp,
+                ref_chosen_lp,
+                ref_rejected_lp,
                 beta=beta,
             )
 
-            s_loss = (
-                sft_loss(chosen_logits, batch["chosen_labels"])
-                if log_sft else jnp.zeros(())
-            )
+            s_loss = sft_loss(chosen_logits, batch["chosen_labels"]) if log_sft else jnp.zeros(())
 
             total = d_loss + sft_weight * s_loss
             metrics = {
-                "dpo_loss":        d_loss,
-                "sft_loss":        s_loss,
-                "total_loss":      total,
-                "chosen_reward":   chosen_r.mean(),
+                "dpo_loss": d_loss,
+                "sft_loss": s_loss,
+                "total_loss": total,
+                "chosen_reward": chosen_r.mean(),
                 "rejected_reward": rejected_r.mean(),
-                "reward_margin":   (chosen_r - rejected_r).mean(),
+                "reward_margin": (chosen_r - rejected_r).mean(),
                 "reward_accuracy": (chosen_r > rejected_r).astype(jnp.float32).mean(),
             }
             return total, metrics
 
         (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-        grads   = jax.lax.pmean(grads,   axis_name="batch")
+        grads = jax.lax.pmean(grads, axis_name="batch")
         metrics = jax.lax.pmean(metrics, axis_name="batch")
         return state.apply_gradients(grads=grads), metrics
 
@@ -106,8 +102,9 @@ def make_train_step(
 
 # ── Main training function ────────────────────────────────────────────────────
 
+
 def train(cfg: Config) -> None:
-    devices   = jax.devices()
+    devices = jax.devices()
     n_devices = len(devices)
     log.info("JAX devices: %d  (%s)", n_devices, devices[0].device_kind)
 
@@ -119,42 +116,50 @@ def train(cfg: Config) -> None:
 
     train_ds = HHRLHFDataset(
         Path(cfg.data.data_dir) / cfg.data.train_file,
-        tokenizer, cfg.model.max_seq_len,
+        tokenizer,
+        cfg.model.max_seq_len,
     )
     eval_ds = HHRLHFDataset(
         Path(cfg.data.data_dir) / cfg.data.eval_file,
-        tokenizer, cfg.model.max_seq_len,
+        tokenizer,
+        cfg.model.max_seq_len,
     )
 
-    train_loader = make_dataloader(train_ds, global_batch, shuffle=True,  num_workers=cfg.data.num_workers)
-    eval_loader  = make_dataloader(eval_ds,  global_batch, shuffle=False, num_workers=cfg.data.num_workers)
+    train_loader = make_dataloader(
+        train_ds, global_batch, shuffle=True, num_workers=cfg.data.num_workers
+    )
+    eval_loader = make_dataloader(
+        eval_ds, global_batch, shuffle=False, num_workers=cfg.data.num_workers
+    )
 
     steps_per_epoch = len(train_loader) // cfg.training.gradient_accumulation_steps
-    total_steps     = steps_per_epoch * cfg.training.num_epochs
+    total_steps = steps_per_epoch * cfg.training.num_epochs
 
     try:
         import tunix  # type: ignore[import]
-        model  = tunix.load_model(cfg.model.model_name, dtype=cfg.model.dtype)
+
+        model = tunix.load_model(cfg.model.model_name, dtype=cfg.model.dtype)
         params = model.init_params(jax.random.PRNGKey(cfg.infra.seed))
     except ImportError:
         from transformers import FlaxAutoModelForCausalLM  # type: ignore[import]
-        hf_model = FlaxAutoModelForCausalLM.from_pretrained(cfg.model.model_name, dtype=jnp.bfloat16)
+
+        hf_model = FlaxAutoModelForCausalLM.from_pretrained(
+            cfg.model.model_name, dtype=jnp.bfloat16
+        )
         model, params = hf_model.module, hf_model.params
 
     ref_params = jax.tree_util.tree_map(lambda x: x.copy(), params)
-    optimizer  = make_optimizer(cfg.training, total_steps)
-    state = train_state.TrainState.create(
-        apply_fn=model.apply, params=params, tx=optimizer
-    )
+    optimizer = make_optimizer(cfg.training, total_steps)
+    state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
 
-    state      = jax.device_put_replicated(state,      devices)
+    state = jax.device_put_replicated(state, devices)
     ref_params = jax.device_put_replicated(ref_params, devices)
 
     p_train_step = make_train_step(
         cfg.training.beta, cfg.training.sft_loss_weight, cfg.training.log_sft_loss
     )
     checkpointer = ocp.StandardCheckpointer()
-    ckpt_dir     = Path(cfg.infra.checkpoint_dir)
+    ckpt_dir = Path(cfg.infra.checkpoint_dir)
 
     with TrajectoryLogger(cfg.infra.log_dir) as tlog:
         global_step = 0
@@ -174,7 +179,10 @@ def train(cfg: Config) -> None:
                     tlog.log(global_step, m, prefix="train")
                     log.info(
                         "step=%d  dpo=%.4f  sft=%.4f  reward_acc=%.3f",
-                        global_step, m["dpo_loss"], m["sft_loss"], m["reward_accuracy"],
+                        global_step,
+                        m["dpo_loss"],
+                        m["sft_loss"],
+                        m["reward_accuracy"],
                     )
 
                 if global_step % cfg.infra.eval_every_steps == 0:
@@ -213,6 +221,7 @@ def _eval(state, ref_params, loader, step_fn, n_devices, cfg: Config) -> dict:
 
 # ── Config loading ────────────────────────────────────────────────────────────
 
+
 def load_config(path: str, overrides: list[str]) -> Config:
     import yaml  # type: ignore[import]
 
@@ -237,6 +246,7 @@ def load_config(path: str, overrides: list[str]) -> Config:
 
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
+
 
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")

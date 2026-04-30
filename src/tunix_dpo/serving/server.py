@@ -22,13 +22,11 @@ import json
 import logging
 import time
 from contextlib import asynccontextmanager
-from typing import Optional
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
-
 from tunix_dpo.serving.engine import VLLMEngine
 from tunix_dpo.serving.metrics import Metrics
 from tunix_dpo.serving.schemas import (
@@ -42,6 +40,7 @@ log = logging.getLogger(__name__)
 
 
 # ── Prompt formatter (Gemma-2 chat template) ─────────────────────────────────
+
 
 def _gemma_prompt(messages: list[ChatMessage]) -> str:
     parts: list[str] = []
@@ -60,9 +59,10 @@ def _gemma_prompt(messages: list[ChatMessage]) -> str:
 
 # ── App factory ───────────────────────────────────────────────────────────────
 
+
 def build_app(args: argparse.Namespace) -> FastAPI:
-    _metrics: Metrics      = Metrics()
-    _engine:  Optional[VLLMEngine] = None
+    _metrics: Metrics = Metrics()
+    _engine: VLLMEngine | None = None
 
     @asynccontextmanager
     async def lifespan(app: FastAPI):  # type: ignore[misc]
@@ -85,7 +85,9 @@ def build_app(args: argparse.Namespace) -> FastAPI:
         version="1.0",
         lifespan=lifespan,
     )
-    app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+    app.add_middleware(
+        CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
+    )
 
     def _guard() -> VLLMEngine:
         if _engine is None or not _engine.ready:
@@ -96,13 +98,13 @@ def build_app(args: argparse.Namespace) -> FastAPI:
     async def health():
         ready = _engine is not None and _engine.ready
         return {
-            "status":  "ok" if ready else "starting",
-            "model":   args.model,
-            "dtype":   args.dtype,
+            "status": "ok" if ready else "starting",
+            "model": args.model,
+            "dtype": args.dtype,
             "metrics": {
-                "requests":    _metrics.requests_total,
-                "tokens":      _metrics.tokens_generated,
-                "avg_lat_ms":  round(_metrics.avg_latency_ms, 1),
+                "requests": _metrics.requests_total,
+                "tokens": _metrics.tokens_generated,
+                "avg_lat_ms": round(_metrics.avg_latency_ms, 1),
                 "tok_per_sec": round(_metrics.avg_tokens_per_sec, 1),
             },
         }
@@ -118,35 +120,55 @@ def build_app(args: argparse.Namespace) -> FastAPI:
     @app.post("/v1/completions")
     async def completions(req: CompletionRequest):
         engine = _guard()
-        rid    = _metrics.next_id()
-        parts  = []
+        rid = _metrics.next_id()
+        parts = []
         try:
             async for delta, _ in engine.generate(
-                req.prompt, req.max_tokens, req.temperature, req.top_p,
-                50, req.repetition_penalty, req.stop, None, rid,
+                req.prompt,
+                req.max_tokens,
+                req.temperature,
+                req.top_p,
+                50,
+                req.repetition_penalty,
+                req.stop,
+                None,
+                rid,
             ):
                 parts.append(delta)
         except Exception as exc:
             _metrics.record_error()
             raise HTTPException(500, str(exc)) from exc
         text = "".join(parts)
-        return {"id": rid, "object": "text_completion", "model": req.model,
-                "choices": [{"text": text, "index": 0, "finish_reason": "stop"}]}
+        return {
+            "id": rid,
+            "object": "text_completion",
+            "model": req.model,
+            "choices": [{"text": text, "index": 0, "finish_reason": "stop"}],
+        }
 
     @app.post("/v1/chat/completions")
     async def chat(req: ChatCompletionRequest):
         engine = _guard()
         prompt = _gemma_prompt(req.messages)
-        rid    = _metrics.next_id()
+        rid = _metrics.next_id()
 
         if req.stream:
-            return StreamingResponse(_stream(engine, req, prompt, rid), media_type="text/event-stream")
+            return StreamingResponse(
+                _stream(engine, req, prompt, rid), media_type="text/event-stream"
+            )
 
         parts = []
         try:
             async for delta, _ in engine.generate(
-                prompt, req.max_tokens, req.temperature, req.top_p,
-                req.top_k, req.repetition_penalty, req.stop, req.seed, rid,
+                prompt,
+                req.max_tokens,
+                req.temperature,
+                req.top_p,
+                req.top_k,
+                req.repetition_penalty,
+                req.stop,
+                req.seed,
+                rid,
             ):
                 parts.append(delta)
         except Exception as exc:
@@ -154,19 +176,44 @@ def build_app(args: argparse.Namespace) -> FastAPI:
             raise HTTPException(500, str(exc)) from exc
 
         text = "".join(parts)
-        return {"id": rid, "object": "chat.completion", "model": req.model,
-                "choices": [{"index": 0, "message": {"role": "assistant", "content": text},
-                             "finish_reason": "stop"}]}
+        return {
+            "id": rid,
+            "object": "chat.completion",
+            "model": req.model,
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": text},
+                    "finish_reason": "stop",
+                }
+            ],
+        }
 
     async def _stream(engine: VLLMEngine, req: ChatCompletionRequest, prompt: str, rid: str):
         try:
             async for delta, is_final in engine.generate(
-                prompt, req.max_tokens, req.temperature, req.top_p,
-                req.top_k, req.repetition_penalty, req.stop, req.seed, rid,
+                prompt,
+                req.max_tokens,
+                req.temperature,
+                req.top_p,
+                req.top_k,
+                req.repetition_penalty,
+                req.stop,
+                req.seed,
+                rid,
             ):
-                chunk = {"id": rid, "object": "chat.completion.chunk", "model": req.model,
-                         "choices": [{"index": 0, "delta": {"content": delta},
-                                      "finish_reason": "stop" if is_final else None}]}
+                chunk = {
+                    "id": rid,
+                    "object": "chat.completion.chunk",
+                    "model": req.model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": delta},
+                            "finish_reason": "stop" if is_final else None,
+                        }
+                    ],
+                }
                 yield f"data: {json.dumps(chunk)}\n\n"
         except Exception as exc:
             _metrics.record_error()
@@ -179,21 +226,27 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
         async def _one(prompt: str) -> dict:
             rid = _metrics.next_id()
-            t0  = time.perf_counter()
+            t0 = time.perf_counter()
             toks: list[str] = []
             async for delta, _ in engine.generate(
                 prompt, req.max_tokens, 0.0, 1.0, 1, 1.0, None, None, rid
             ):
                 toks.append(delta)
             lat = (time.perf_counter() - t0) * 1000
-            n   = len("".join(toks).split())
-            return {"prompt": prompt[:50], "latency_ms": round(lat, 1),
-                    "tokens": n, "tok_per_s": round(n / max(lat / 1000, 1e-9), 1)}
+            n = len("".join(toks).split())
+            return {
+                "prompt": prompt[:50],
+                "latency_ms": round(lat, 1),
+                "tokens": n,
+                "tok_per_s": round(n / max(lat / 1000, 1e-9), 1),
+            }
 
-        prompts = (req.prompts * ((req.concurrency // max(len(req.prompts), 1)) + 1))[:req.concurrency]
+        prompts = (req.prompts * ((req.concurrency // max(len(req.prompts), 1)) + 1))[
+            : req.concurrency
+        ]
         results = await asyncio.gather(*[_one(p) for p in prompts])
-        lats    = sorted(r["latency_ms"] for r in results)
-        tps     = [r["tok_per_s"]  for r in results]
+        lats = sorted(r["latency_ms"] for r in results)
+        tps = [r["tok_per_s"] for r in results]
         return {
             "results": results,
             "summary": {
@@ -210,21 +263,24 @@ def build_app(args: argparse.Namespace) -> FastAPI:
 
 # ── CLI ───────────────────────────────────────────────────────────────────────
 
+
 def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 
     parser = argparse.ArgumentParser(description="Tunix-DPO vLLM inference server.")
-    parser.add_argument("--model",                   required=True)
-    parser.add_argument("--host",                    default="0.0.0.0")
-    parser.add_argument("--port",                    default=8000, type=int)
-    parser.add_argument("--dtype",                   default="bfloat16",
-                        choices=["bfloat16", "float16", "float32", "auto"])
-    parser.add_argument("--max_model_len",           default=4096,  type=int)
-    parser.add_argument("--gpu_memory_utilization",  default=0.90,  type=float)
-    parser.add_argument("--tensor_parallel_size",    default=1,     type=int)
-    parser.add_argument("--quantization",            default=None,
-                        choices=[None, "gptq", "awq", "squeezellm", "bitsandbytes"])
-    parser.add_argument("--max_num_seqs",            default=256,   type=int)
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--host", default="0.0.0.0")
+    parser.add_argument("--port", default=8000, type=int)
+    parser.add_argument(
+        "--dtype", default="bfloat16", choices=["bfloat16", "float16", "float32", "auto"]
+    )
+    parser.add_argument("--max_model_len", default=4096, type=int)
+    parser.add_argument("--gpu_memory_utilization", default=0.90, type=float)
+    parser.add_argument("--tensor_parallel_size", default=1, type=int)
+    parser.add_argument(
+        "--quantization", default=None, choices=[None, "gptq", "awq", "squeezellm", "bitsandbytes"]
+    )
+    parser.add_argument("--max_num_seqs", default=256, type=int)
     args = parser.parse_args(argv)
 
     app = build_app(args)

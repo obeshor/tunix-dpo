@@ -1,42 +1,35 @@
-# configs/dpo_v5e.yaml
-# ─────────────────────────────────────────────────────────────
-# Tunix DPO training — TPU v5e-8
-# All values correspond to fields in tunix_dpo.training.config.
-# ─────────────────────────────────────────────────────────────
+# ─── Tunix DPO config for TPU v5e-8 (us-west4-a) ────────────────────────────
+# Override any field via CLI:  tunix-train --config configs/dpo_v5e.yaml training.beta=0.05
 
 model:
-  model_name:  "google/gemma-2b"
-  max_seq_len: 512
-  dtype:       "bfloat16"      # TPU v5e native — do not change to float32
+  model_name:    google/gemma-3-1b-it      # text-only, instruction-tuned, 32K context
+  max_seq_len:   1024
+  dtype:         bfloat16
 
 training:
-  beta:                        0.1      # KL coefficient (0.05–0.5 typical)
-  learning_rate:               1.0e-5
-  lr_schedule:                 "cosine"
-  warmup_steps:                100
-  num_epochs:                  1
-  per_device_batch_size:       4        # × 8 chips = 32 global batch
-  gradient_accumulation_steps: 2        # effective batch = 64
-
-  # SFT trajectory comparison — keep both logs even for pure DPO runs
-  sft_loss_weight: 0.0    # 0 = pure DPO; >0 = blended objective
-  log_sft_loss:    true   # always log SFT loss for trajectory comparison
-
-  # Regularisation
-  max_grad_norm:  1.0
-  weight_decay:   0.01
+  beta:                       0.1
+  learning_rate:              1.0e-5
+  lr_schedule:                cosine
+  warmup_steps:               100
+  num_epochs:                 1
+  per_device_batch_size:      8             # ⇒ global batch 64 on v5e-8
+  gradient_accumulation_steps: 1
+  sft_loss_weight:            0.0
+  log_sft_loss:               true
+  max_grad_norm:              1.0
+  weight_decay:               0.01
 
 data:
-  data_dir:    "./data/dpo"
-  train_file:  "train.jsonl"
-  eval_file:   "test.jsonl"
+  data_dir:    ./data/dpo
+  train_file:  train.jsonl
+  eval_file:   test.jsonl
   num_workers: 4
 
 infra:
-  gcs_bucket:             "gs://tpusprint-tunix-checkpoints"
-  checkpoint_dir:         "checkpoints/dpo_v5e_run"
+  gcs_bucket:             gs://your-project-tunix-checkpoints
+  checkpoint_dir:         checkpoints/dpo_v5e_run
   checkpoint_every_steps: 500
-  log_dir:                "logs/dpo_v5e_run"
+  log_dir:                logs/dpo_v5e_run
   log_every_steps:        10
   eval_every_steps:       250
   seed:                   42

@@ -149,7 +149,7 @@ tr
 
 ```bash
 # Full benchmark (~2h on CPU, ~20min on GPU)
-make eval BASE_MODEL=google/gemma-2b TUNED_MODEL=./checkpoints/dpo_v5e_run/final
+make eval BASE_MODEL=google/gemma-3-1b-it TUNED_MODEL=./checkpoints/dpo_v5e_run/final
 
 # Quick smoke test (50 TruthfulQA + 20/group ToxiGen)
 make eval-quick

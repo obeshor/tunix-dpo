@@ -14,21 +14,21 @@ class Metrics:
     """Thread-safe (single-process async) telemetry store."""
 
     def __init__(self) -> None:
-        self.requests_total   = 0
+        self.requests_total = 0
         self.tokens_generated = 0
-        self.errors_total     = 0
-        self.latency_sum_ms   = 0.0
-        self._req_id          = 0
-        self._start           = time.time()
+        self.errors_total = 0
+        self.latency_sum_ms = 0.0
+        self._req_id = 0
+        self._start = time.time()
 
     def next_id(self) -> str:
         self._req_id += 1
         return f"req-{self._req_id:08d}"
 
     def record(self, tokens: int, latency_ms: float) -> None:
-        self.requests_total   += 1
+        self.requests_total += 1
         self.tokens_generated += tokens
-        self.latency_sum_ms   += latency_ms
+        self.latency_sum_ms += latency_ms
 
     def record_error(self) -> None:
         self.errors_total += 1

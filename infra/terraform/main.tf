@@ -1,19 +1,25 @@
-terraform {
-  required_version = ">= 1.6"
+# ─── Tunix DPO :: GCP Infrastructure ────────────────────────────────────────
+# Creates the TPU v5e-8 VM, GCS bucket, service account, and IAM bindings.
+#
+# Usage:
+#   1. cd infra/terraform
+#   2. cp environments/dev/terraform.tfvars.example environments/dev/terraform.tfvars
+#   3. Edit environments/dev/terraform.tfvars with your project_id
+#   4. terraform init
+#   5. terraform plan  -var-file=environments/dev/terraform.tfvars
+#   6. terraform apply -var-file=environments/dev/terraform.tfvars
+#   7. ⚠️  DELETE ASAP after training finishes:
+#      terraform destroy -var-file=environments/dev/terraform.tfvars
+# ────────────────────────────────────────────────────────────────────────────
 
+terraform {
+  required_version = ">= 1.5"
   required_providers {
     google = {
-      source  = "hashicorp/google-beta"
+      source  = "hashicorp/google"
       version = "~> 5.0"
     }
   }
-
-  # Uncomment to store state in GCS (recommended for team use).
-  # The bucket must already exist before running terraform init.
-  # backend "gcs" {
-  #   bucket = "YOUR_PROJECT_ID-terraform-state"
-  #   prefix = "tunix-dpo/phase2"
-  # }
 }
 
 provider "google" {
@@ -22,161 +28,116 @@ provider "google" {
   zone    = var.zone
 }
 
-# ── Local values ──────────────────────────────────────────────────────────────
-
-locals {
-  # Strip gs:// prefix if the user accidentally included it in the variable,
-  # otherwise use the local bucket_name which derives from project ID.
-  bucket_name = var.bucket_name != "" ? replace(var.bucket_name, "gs://", "") : lower("${var.project_id}-tunix-checkpoints")
-  sa_email    = "${var.service_account_id}@${var.project_id}.iam.gserviceaccount.com"
-}
-
-# ── Required APIs ─────────────────────────────────────────────────────────────
-# Enables the four APIs the training pipeline needs.
-# Set enable_apis = false if your project already has them enabled.
-
+# ─── Required APIs ──────────────────────────────────────────────────────────
 resource "google_project_service" "tpu" {
-  count   = var.enable_apis ? 1 : 0
-  project = var.project_id
-  service = "tpu.googleapis.com"
-
-  disable_dependent_services = false
-  disable_on_destroy         = false
+  service            = "tpu.googleapis.com"
+  disable_on_destroy = false
 }
 
 resource "google_project_service" "storage" {
-  count   = var.enable_apis ? 1 : 0
-  project = var.project_id
-  service = "storage.googleapis.com"
-
-  disable_dependent_services = false
-  disable_on_destroy         = false
+  service            = "storage.googleapis.com"
+  disable_on_destroy = false
 }
 
 resource "google_project_service" "compute" {
-  count   = var.enable_apis ? 1 : 0
-  project = var.project_id
-  service = "compute.googleapis.com"
-
-  disable_dependent_services = false
-  disable_on_destroy         = false
+  service            = "compute.googleapis.com"
+  disable_on_destroy = false
 }
 
 resource "google_project_service" "iam" {
-  count   = var.enable_apis ? 1 : 0
-  project = var.project_id
-  service = "iam.googleapis.com"
-
-  disable_dependent_services = false
-  disable_on_destroy         = false
+  service            = "iam.googleapis.com"
+  disable_on_destroy = false
 }
 
-# ── Service account ───────────────────────────────────────────────────────────
-# Dedicated identity for the TPU VM. Grants only what training needs:
-# GCS read/write (checkpoints + logs) and TPU usage.
-
+# ─── Service account for the TPU VM ─────────────────────────────────────────
 resource "google_service_account" "tpu_sa" {
-  project      = var.project_id
-  account_id   = var.service_account_id
-  display_name = "Tunix DPO TPU training service account"
+  account_id   = "tunix-tpu-sa"
+  display_name = "Tunix DPO TPU service account"
+  description  = "Service account used by the TPU VM to read/write checkpoints"
 
   depends_on = [google_project_service.iam]
 }
 
+# Grant access to write checkpoints to GCS
 resource "google_project_iam_member" "tpu_sa_storage" {
   project = var.project_id
   role    = "roles/storage.objectAdmin"
   member  = "serviceAccount:${google_service_account.tpu_sa.email}"
 }
 
-resource "google_project_iam_member" "tpu_sa_tpu_viewer" {
-  project = var.project_id
-  role    = "roles/tpu.viewer"
-  member  = "serviceAccount:${google_service_account.tpu_sa.email}"
-}
-
-resource "google_project_iam_member" "tpu_sa_log_writer" {
+# Grant access to write logs
+resource "google_project_iam_member" "tpu_sa_logging" {
   project = var.project_id
   role    = "roles/logging.logWriter"
   member  = "serviceAccount:${google_service_account.tpu_sa.email}"
 }
 
-# ── GCS bucket ────────────────────────────────────────────────────────────────
-# Single-region bucket co-located with the TPU VM.
-# Co-location is critical: cross-region checkpoint writes are billed
-# and add significant latency to each checkpoint step.
-
+# ─── GCS bucket for training checkpoints ────────────────────────────────────
+# Co-located with the TPU region so writes are free and low-latency.
+# force_destroy = false so terraform destroy will NOT delete the bucket if it
+# contains objects (i.e. trained checkpoints) — protects expensive results.
 resource "google_storage_bucket" "checkpoints" {
-  project  = var.project_id
-  name     = local.bucket_name
-  location = var.region
-
-  # Delete bucket contents before destroying (safe for ephemeral training runs;
-  # set to false if you want Terraform to refuse destruction when checkpoints exist).
-  force_destroy = false
+  name          = "${var.project_id}-tunix-checkpoints"
+  location      = var.region
+  storage_class = "STANDARD"
 
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
 
   versioning {
-    enabled = false
+    enabled = true
   }
 
   lifecycle_rule {
-    condition {
-      age = 90
-    }
     action {
-      type = "Delete"
+      type = "SetStorageClass"
+      storage_class = "NEARLINE"
+    }
+    condition {
+      age = 30  # tier down checkpoints older than 30 days
     }
   }
 
-  labels = var.labels
+  force_destroy = false  # protect against accidental deletion
 
   depends_on = [google_project_service.storage]
 }
 
-resource "google_storage_bucket_iam_member" "sa_bucket_access" {
-  bucket = google_storage_bucket.checkpoints.name
-  role   = "roles/storage.objectAdmin"
-  member = "serviceAccount:${google_service_account.tpu_sa.email}"
-}
-
-# ── TPU VM ────────────────────────────────────────────────────────────────────
-# The google_tpu_v2_vm resource (provider >= 5.0) maps directly to the
-# gcloud compute tpus tpu-vm create command used in tpu_provision.sh.
-
+# ─── TPU VM ────────────────────────────────────────────────────────────────
+# v5e-8 in us-west4-a — Google's canonical zone for TPU v5e.
+# The "v5litepod-8" name is the gcloud / Compute Engine convention; the
+# Terraform google_tpu_v2_vm resource accepts the same accelerator types.
 resource "google_tpu_v2_vm" "training" {
-  project  = var.project_id
-  name     = var.tpu_name
-  zone     = var.zone
-
-  runtime_version  = var.runtime_version
+  name             = var.tpu_name
+  zone             = var.zone
+  description      = "Tunix DPO training VM (Gemma 3 1B IT, DPO)"
   accelerator_type = var.accelerator_type
-
-  # Attach the dedicated service account so the VM can write to GCS
-  # without user credentials present.
-  service_account {
-    email  = google_service_account.tpu_sa.email
-    scope  = ["https://www.googleapis.com/auth/cloud-platform"]
-  }
+  runtime_version  = var.runtime_version
 
   network_config {
+    network    = "default"
+    subnetwork = "default"
     enable_external_ips = true
   }
 
-  # Preemptible (Spot) VMs are ~70% cheaper but can be interrupted.
-  scheduling_config {
-    preemptible = var.preemptible
+  service_account {
+    email = google_service_account.tpu_sa.email
+    scope = ["https://www.googleapis.com/auth/cloud-platform"]
   }
 
-  labels = var.labels
+  metadata = {
+    startup-script = file("${path.module}/scripts/startup.sh")
+    bucket         = google_storage_bucket.checkpoints.name
+  }
 
-  # Ensure the API is enabled and the service account exists before creating.
+  labels = {
+    project = "tunix-dpo"
+    env     = var.env
+    model   = "gemma-3-1b-it"
+  }
+
   depends_on = [
     google_project_service.tpu,
-    google_project_service.compute,
-    google_service_account.tpu_sa,
-    google_storage_bucket.checkpoints,
+    google_project_iam_member.tpu_sa_storage,
   ]
 }

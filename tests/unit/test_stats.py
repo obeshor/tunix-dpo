@@ -3,7 +3,6 @@
 import math
 
 import pytest
-
 from tunix_dpo.evaluation.stats import (
     bootstrap_ci,
     cohens_h,
