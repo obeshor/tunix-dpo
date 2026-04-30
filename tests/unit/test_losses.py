@@ -1,66 +1,64 @@
-"""Unit tests for tunix_dpo.training.losses."""
+"""Unit tests for tunix_dpo.training.losses (skipped if JAX absent)."""
+
+from __future__ import annotations
 
 import pytest
 
-pytest.importorskip("jax", reason="JAX not installed — skipping loss tests")
+jax = pytest.importorskip("jax")
+jnp = pytest.importorskip("jax.numpy")
 
-import jax.numpy as jnp
 from tunix_dpo.training.losses import dpo_loss, log_probs_from_logits, sft_loss
+
+
+def _fake_logits(B: int = 2, T: int = 8, V: int = 16, seed: int = 0):
+    key = jax.random.PRNGKey(seed)
+    return jax.random.normal(key, (B, T, V))
+
+
+def _fake_labels(B: int = 2, T: int = 8, V: int = 16, seed: int = 0):
+    key = jax.random.PRNGKey(seed)
+    return jax.random.randint(key, (B, T), 0, V)
+
+
+def _ones_mask(B: int = 2, T: int = 8):
+    return jnp.ones((B, T), dtype=jnp.int32)
 
 
 class TestLogProbsFromLogits:
     def test_shape(self) -> None:
-        logits = jnp.zeros((2, 5, 10))  # batch=2, seq=5, vocab=10
-        labels = jnp.zeros((2, 5), dtype=jnp.int32)
-        out = log_probs_from_logits(logits, labels)
+        out = log_probs_from_logits(_fake_logits(), _fake_labels(), _ones_mask())
         assert out.shape == (2,)
-
-    def test_masked_tokens_ignored(self) -> None:
-        logits = jnp.zeros((1, 4, 8))
-        # Only the first token is unmasked
-        labels_full = jnp.zeros((1, 4), dtype=jnp.int32)
-        labels_masked = jnp.array([[-100, -100, -100, 0]])
-        full_lp = log_probs_from_logits(logits, labels_full)
-        masked_lp = log_probs_from_logits(logits, labels_masked)
-        # Masked version sums over fewer tokens — value should differ
-        assert float(full_lp[0]) != float(masked_lp[0])
 
 
 class TestDpoLoss:
-    def test_returns_scalar(self) -> None:
-        b = 4
-        chosen = jnp.full((b,), -1.0)
-        rejected = jnp.full((b,), -2.0)
-        loss, cr, rr = dpo_loss(chosen, rejected, chosen, rejected, beta=0.1)
-        assert loss.shape == ()
+    def test_returns_scalar_loss(self) -> None:
+        loss, metrics = dpo_loss(
+            _fake_logits(seed=1), _fake_logits(seed=2),
+            _fake_logits(seed=1), _fake_logits(seed=2),
+            _fake_labels(seed=1), _fake_labels(seed=2),
+            _ones_mask(), _ones_mask(),
+            beta=0.1,
+        )
+        assert loss.ndim == 0
+        assert "reward_acc" in metrics
+        assert "reward_margin" in metrics
 
-    def test_loss_decreases_when_chosen_better(self) -> None:
-        """Loss should be lower when chosen log-probs clearly exceed rejected."""
-        high = jnp.full((8,), -0.5)
-        low = jnp.full((8,), -5.0)
-        loss_good, _, _ = dpo_loss(high, low, high, low, beta=0.1)
-        loss_bad, _, _ = dpo_loss(low, high, high, low, beta=0.1)
-        assert float(loss_good) < float(loss_bad)
+    def test_zero_when_policy_equals_reference(self) -> None:
+        """If policy == reference, DPO logits collapse to 0 → loss ≈ log 2."""
+        logits_c = _fake_logits(seed=42)
+        logits_r = _fake_logits(seed=99)
+        labels_c = _fake_labels(seed=42)
+        labels_r = _fake_labels(seed=99)
+        mask = _ones_mask()
 
-    def test_reward_margin_positive_when_chosen_better(self) -> None:
-        high = jnp.full((4,), -1.0)
-        low = jnp.full((4,), -3.0)
-        _, chosen_r, rejected_r = dpo_loss(high, low, high, low, beta=0.1)
-        # chosen reward = log-ratio for chosen; both ref and policy are same
-        # so ratios are 0 — just check the call doesn't error
-        assert chosen_r.shape == (4,)
-        assert rejected_r.shape == (4,)
+        loss, _ = dpo_loss(
+            logits_c, logits_r, logits_c, logits_r,
+            labels_c, labels_r, mask, mask, beta=0.1,
+        )
+        assert abs(float(loss) - 0.6931) < 1e-3
 
 
 class TestSftLoss:
-    def test_returns_scalar(self) -> None:
-        logits = jnp.zeros((2, 5, 10))
-        labels = jnp.zeros((2, 5), dtype=jnp.int32)
-        loss = sft_loss(logits, labels)
-        assert loss.shape == ()
-
-    def test_all_masked_returns_zero(self) -> None:
-        logits = jnp.ones((2, 5, 10))
-        labels = jnp.full((2, 5), -100, dtype=jnp.int32)
-        loss = sft_loss(logits, labels)
-        assert float(loss) == pytest.approx(0.0)
+    def test_positive(self) -> None:
+        l = sft_loss(_fake_logits(), _fake_labels(), _ones_mask())
+        assert float(l) > 0

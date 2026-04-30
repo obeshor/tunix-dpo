@@ -1,98 +1,83 @@
 """Unit tests for tunix_dpo.data.parser and tunix_dpo.data.formatter."""
 
+from __future__ import annotations
+
 import pytest
+
 from tunix_dpo.data.formatter import format_dpo, format_rm
 from tunix_dpo.data.parser import is_valid_pair, parse_dialogue
-
-# ── parse_dialogue ────────────────────────────────────────────────────────────
 
 
 class TestParseDialogue:
     def test_single_turn(self) -> None:
-        raw = "\n\nHuman: Hello!\n\nAssistant: Hi there."
+        raw = "\n\nHuman: Hello\n\nAssistant: Hi there"
         prompt, response = parse_dialogue(raw)
-        assert "Human: Hello!" in prompt
-        assert "Assistant:" in prompt
-        assert response == "Hi there."
+        assert response == "Hi there"
+        assert prompt.endswith("Assistant:")
+        assert "Hello" in prompt
 
     def test_multi_turn(self) -> None:
         raw = (
-            "\n\nHuman: Turn 1"
-            "\n\nAssistant: Reply 1"
-            "\n\nHuman: Turn 2"
-            "\n\nAssistant: Final reply"
+            "\n\nHuman: Q1\n\nAssistant: A1"
+            "\n\nHuman: Q2\n\nAssistant: Final answer"
         )
         prompt, response = parse_dialogue(raw)
-        assert "Turn 1" in prompt
-        assert "Reply 1" in prompt
-        assert "Turn 2" in prompt
-        assert response == "Final reply"
-        # The prompt must end with "Assistant:" so both chosen/rejected share it
+        assert response == "Final answer"
         assert prompt.endswith("Assistant:")
+        for tok in ("Q1", "A1", "Q2"):
+            assert tok in prompt
 
-    def test_prompt_identical_for_chosen_and_rejected(self) -> None:
-        """Verifies the key DPO invariant: prompts must match."""
-        base = "\n\nHuman: Question" "\n\nAssistant: "
-        raw_chosen = base + "Good answer"
-        raw_rejected = base + "Bad answer"
+    def test_dpo_invariant_prompts_match(self) -> None:
+        """The DPO invariant: prompt is identical for chosen/rejected."""
+        base = "\n\nHuman: Is this safe?\n\nAssistant: "
+        pc, _ = parse_dialogue(base + "Yes, completely safe here.")
+        pr, _ = parse_dialogue(base + "No, dangerous.")
+        assert pc == pr
 
-        prompt_c, _ = parse_dialogue(raw_chosen)
-        prompt_r, _ = parse_dialogue(raw_rejected)
-        assert prompt_c == prompt_r
-
-    def test_malformed_returns_fallback(self) -> None:
-        raw = "No turn markers here"
-        prompt, response = parse_dialogue(raw)
+    def test_empty_input(self) -> None:
+        prompt, response = parse_dialogue("")
         assert response == ""
-
-
-# ── is_valid_pair ─────────────────────────────────────────────────────────────
+        assert prompt == ""
 
 
 class TestIsValidPair:
-    def test_valid_pair(self) -> None:
-        assert is_valid_pair("A good response.", "A bad response.") is True
+    def test_distinct_long_pair(self) -> None:
+        assert is_valid_pair(
+            "A long enough chosen response.",
+            "A different rejected response.",
+        )
 
-    def test_identical_pair_rejected(self) -> None:
-        assert is_valid_pair("Same text", "Same text") is False
+    def test_identical_rejected(self) -> None:
+        assert not is_valid_pair("same response", "same response")
 
-    def test_empty_chosen_rejected(self) -> None:
-        assert is_valid_pair("", "Something") is False
-        assert is_valid_pair("Something", "") is False
+    def test_too_short(self) -> None:
+        assert not is_valid_pair("ok", "yes")
 
-    def test_stub_rejected(self) -> None:
-        assert is_valid_pair("Ok", "Fine") is False  # both < 10 chars
-
-
-# ── format_dpo ────────────────────────────────────────────────────────────────
+    def test_empty_strings(self) -> None:
+        assert not is_valid_pair("", "non-empty")
+        assert not is_valid_pair("non-empty", "")
 
 
-class TestFormatDpo:
-    def test_required_keys_present(self) -> None:
-        rec = format_dpo("prompt", "chosen", "rejected")
-        assert {"prompt", "chosen", "rejected"} <= rec.keys()
-
-    def test_metadata_optional(self) -> None:
-        rec = format_dpo("p", "c", "r")
-        assert "metadata" not in rec
-
-    def test_metadata_included_when_provided(self) -> None:
-        rec = format_dpo("p", "c", "r", metadata={"split": "train"})
+class TestFormatters:
+    def test_format_dpo_basic(self) -> None:
+        rec = format_dpo("p", "c", "r", {"split": "train"})
+        assert rec["prompt"] == "p"
+        assert rec["chosen"] == "c"
+        assert rec["rejected"] == "r"
         assert rec["metadata"] == {"split": "train"}
 
+    def test_format_dpo_no_metadata(self) -> None:
+        rec = format_dpo("p", "c", "r")
+        assert rec["metadata"] == {}
 
-# ── format_rm ─────────────────────────────────────────────────────────────────
-
-
-class TestFormatRm:
-    def test_label_1(self) -> None:
-        rec = format_rm("p", "response", label=1)
+    def test_format_rm_chosen(self) -> None:
+        rec = format_rm("p", "good", label=1)
         assert rec["label"] == 1
 
-    def test_label_0(self) -> None:
-        rec = format_rm("p", "response", label=0)
+    def test_format_rm_rejected(self) -> None:
+        rec = format_rm("p", "bad", label=0)
         assert rec["label"] == 0
 
-    def test_invalid_label_raises(self) -> None:
+    def test_format_rm_invalid_label_raises(self) -> None:
         with pytest.raises(ValueError):
             format_rm("p", "r", label=2)
