@@ -70,13 +70,13 @@ GCS bucket, service account, and IAM bindings.
 
 ## Five CLI commands
 
-| Command         | Phase                | What it does                                              |
-| --------------- | -------------------- | --------------------------------------------------------- |
-| `tunix-curate`  | 1. Data              | Download HH-RLHF, parse, filter, write JSONL              |
-| `tunix-train`   | 2. Training          | Run DPO on TPU v5e-8                                      |
-| `tunix-eval`    | 3. Benchmarking      | TruthfulQA + ToxiGen vs base, with bootstrap CIs          |
-| `tunix-export`  | 4. Conversion        | JAX/Orbax → HuggingFace safetensors (+ optional LiteRT)   |
-| `tunix-serve`   | 4. Serving           | Start OpenAI-compatible vLLM API server                   |
+| Command         | Phase                | What it does                                            |
+| --------------- | -------------------- |---------------------------------------------------------|
+| `tunix-curate`  | 1. Data              | Download HH-RLHF, parse, filter, write JSONL            |
+| `tunix-train`   | 2. Training          | Run DPO on TPU v5e-4                                    |
+| `tunix-eval`    | 3. Benchmarking      | TruthfulQA + ToxiGen vs base, with bootstrap CIs        |
+| `tunix-export`  | 4. Conversion        | JAX/Orbax → HuggingFace safetensors (+ optional LiteRT) |
+| `tunix-serve`   | 4. Serving           | Start OpenAI-compatible vLLM API server                 |
 
 ## Model and zone choices
 
