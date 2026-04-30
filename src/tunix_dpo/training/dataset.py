@@ -1,99 +1,105 @@
 """
-Dataset and DataLoader for DPO training.
+Dataset loading and collation for DPO training.
 
-Tokenises the curated JSONL files, applies prompt-masking (labels=-100
-over prompt tokens so the DPO loss is on the response only), and
-reshapes batches to [n_devices, per_device_batch, seq_len] for pmap.
+Reads a curated JSONL file produced by ``tunix-curate``, tokenises each pair
+with the Gemma 3 1B IT tokenizer, and produces fixed-length batches with the
+correct response-only masks for the DPO loss.
 """
 
 from __future__ import annotations
 
-import logging
+import json
 from pathlib import Path
 from typing import Any
 
 import numpy as np
-from datasets import load_dataset
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
-from transformers import PreTrainedTokenizerBase
-
-log = logging.getLogger(__name__)
 
 
-class HHRLHFDataset(Dataset):
-    """Tokenises a DPO JSONL file into padded numpy arrays.
+class HHRLHFDataset:
+    """Lazily loads JSONL records into memory and tokenises on demand."""
 
-    Each item contains:
-        chosen_input_ids   : [max_len]
-        chosen_labels      : [max_len]  — prompt tokens masked to -100
-        rejected_input_ids : [max_len]
-        rejected_labels    : [max_len]
-    """
+    def __init__(self, jsonl_path: str | Path, tokenizer, max_seq_len: int = 1024):
+        self.path = Path(jsonl_path)
+        self.tokenizer = tokenizer
+        self.max_seq_len = max_seq_len
+
+        with open(self.path) as f:
+            self.records: list[dict[str, Any]] = [json.loads(line) for line in f]
+
+    def __len__(self) -> int:
+        return len(self.records)
+
+    def __getitem__(self, idx: int) -> dict[str, np.ndarray]:
+        rec = self.records[idx]
+        return self._encode(rec["prompt"], rec["chosen"], rec["rejected"])
+
+    def _encode(self, prompt: str, chosen: str, rejected: str) -> dict[str, np.ndarray]:
+        prompt_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        chosen_ids = self.tokenizer.encode(" " + chosen, add_special_tokens=False)
+        rejected_ids = self.tokenizer.encode(" " + rejected, add_special_tokens=False)
+
+        eos = self.tokenizer.eos_token_id
+        if eos is not None:
+            chosen_ids = chosen_ids + [eos]
+            rejected_ids = rejected_ids + [eos]
+
+        return {
+            "chosen_ids":   self._pack(prompt_ids, chosen_ids),
+            "chosen_mask":  self._mask(prompt_ids, chosen_ids),
+            "rejected_ids": self._pack(prompt_ids, rejected_ids),
+            "rejected_mask": self._mask(prompt_ids, rejected_ids),
+        }
+
+    def _pack(self, prompt_ids: list[int], response_ids: list[int]) -> np.ndarray:
+        ids = (prompt_ids + response_ids)[: self.max_seq_len]
+        pad_id = self.tokenizer.pad_token_id or 0
+        ids = ids + [pad_id] * (self.max_seq_len - len(ids))
+        return np.asarray(ids, dtype=np.int32)
+
+    def _mask(self, prompt_ids: list[int], response_ids: list[int]) -> np.ndarray:
+        """1 over response tokens, 0 over prompt and padding."""
+        mask = np.zeros(self.max_seq_len, dtype=np.int32)
+        start = min(len(prompt_ids), self.max_seq_len)
+        end = min(start + len(response_ids), self.max_seq_len)
+        mask[start:end] = 1
+        return mask
+
+
+def collate_batch(records: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
+    """Stack a list of encoded records into a single batch of arrays."""
+    return {k: np.stack([r[k] for r in records], axis=0) for k in records[0]}
+
+
+class DataLoader:
+    """Minimal shuffled, batched iterator. No PyTorch dependency."""
 
     def __init__(
         self,
-        path: str | Path,
-        tokenizer: PreTrainedTokenizerBase,
-        max_len: int,
-    ) -> None:
-        self.tokenizer = tokenizer
-        self.max_len = max_len
-        raw = load_dataset("json", data_files=str(path), split="train")
-        log.info("Tokenising %s (%d rows)…", Path(path).name, len(raw))
-        self._data = [self._encode(row) for row in tqdm(raw, leave=False)]
+        dataset: HHRLHFDataset,
+        batch_size: int,
+        shuffle: bool = True,
+        seed: int = 42,
+        drop_last: bool = True,
+    ):
+        self.dataset = dataset
+        self.batch_size = batch_size
+        self.shuffle = shuffle
+        self.rng = np.random.default_rng(seed)
+        self.drop_last = drop_last
 
-    def _encode(self, row: dict[str, Any]) -> dict[str, np.ndarray]:
-        def tok(text: str) -> dict[str, np.ndarray]:
-            return self.tokenizer(
-                text,
-                max_length=self.max_len,
-                padding="max_length",
-                truncation=True,
-                return_tensors="np",
-            )
-
-        chosen_enc = tok(row["prompt"] + " " + row["chosen"])
-        rejected_enc = tok(row["prompt"] + " " + row["rejected"])
-        prompt_len = len(self.tokenizer(row["prompt"])["input_ids"])
-
-        def make_labels(ids: np.ndarray) -> np.ndarray:
-            labels = ids.copy()
-            labels[:, :prompt_len] = -100
-            labels[ids == self.tokenizer.pad_token_id] = -100
-            return labels
-
-        return {
-            "chosen_input_ids": chosen_enc["input_ids"][0],
-            "chosen_labels": make_labels(chosen_enc["input_ids"])[0],
-            "rejected_input_ids": rejected_enc["input_ids"][0],
-            "rejected_labels": make_labels(rejected_enc["input_ids"])[0],
-        }
+    def __iter__(self):
+        n = len(self.dataset)
+        idx = np.arange(n)
+        if self.shuffle:
+            self.rng.shuffle(idx)
+        for start in range(0, n, self.batch_size):
+            batch_idx = idx[start : start + self.batch_size]
+            if self.drop_last and len(batch_idx) < self.batch_size:
+                break
+            yield collate_batch([self.dataset[int(i)] for i in batch_idx])
 
     def __len__(self) -> int:
-        return len(self._data)
-
-    def __getitem__(self, idx: int) -> dict[str, np.ndarray]:
-        return self._data[idx]
-
-
-def numpy_collate(batch: list[dict[str, np.ndarray]]) -> dict[str, np.ndarray]:
-    """Stack a list of dicts into a single dict of arrays."""
-    return {k: np.stack([b[k] for b in batch]) for k in batch[0]}
-
-
-def make_dataloader(
-    dataset: HHRLHFDataset,
-    batch_size: int,
-    shuffle: bool,
-    num_workers: int,
-) -> DataLoader:
-    """Return a DataLoader that drops the last incomplete batch (required for pmap)."""
-    return DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        collate_fn=numpy_collate,
-        num_workers=num_workers,
-        drop_last=True,
-    )
+        n = len(self.dataset)
+        if self.drop_last:
+            return n // self.batch_size
+        return (n + self.batch_size - 1) // self.batch_size

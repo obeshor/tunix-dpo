@@ -1,4 +1,3 @@
-"""tunix_dpo — end-to-end DPO alignment pipeline."""
+"""Tunix DPO — End-to-end alignment pipeline for Gemma 3 1B IT."""
 
-__version__ = "0.1.0"
-__author__ = "Yannick Serge Obam"
+__version__ = "0.2.0"

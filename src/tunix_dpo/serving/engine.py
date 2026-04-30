@@ -1,145 +1,133 @@
-"""
-Async vLLM engine wrapper with mock fallback.
+"""Async vLLM engine wrapper.
 
-Isolates all vLLM-specific code so the server module stays clean and
-tests can run without a GPU by swapping in the mock engine.
+Falls back to a stub that echoes the prompt when vLLM is not installed
+(e.g. on macOS), so the server can still start in development mode.
 """
 
 from __future__ import annotations
 
-import asyncio
 import logging
-import time
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncIterator
+from dataclasses import dataclass
 
-from tunix_dpo.serving.metrics import Metrics
+logger = logging.getLogger(__name__)
 
-log = logging.getLogger(__name__)
+
+@dataclass
+class GenerationParams:
+    max_tokens: int = 256
+    temperature: float = 0.7
+    top_p: float = 0.9
+    top_k: int = 50
+    stop: list[str] | None = None
+
+
+@dataclass
+class GenerationResult:
+    text: str
+    prompt_tokens: int
+    completion_tokens: int
+    finish_reason: str  # "stop" | "length"
 
 
 class VLLMEngine:
-    """Async wrapper around ``vllm.AsyncLLMEngine``.
-
-    Falls back to an echo mock if vLLM is not installed, so the server
-    can be tested on CPU without a GPU.
-
-    Parameters
-    ----------
-    model_path:
-        HuggingFace model directory or Hub ID.
-    dtype:
-        ``"bfloat16"`` | ``"float16"`` | ``"auto"``
-    max_model_len:
-        Maximum sequence length (prompt + generation).
-    gpu_memory_utilization:
-        Fraction of GPU VRAM reserved for the KV cache.
-    tensor_parallel_size:
-        Number of GPUs for tensor parallelism.
-    quantization:
-        ``None`` | ``"gptq"`` | ``"awq"`` | ``"bitsandbytes"``
-    max_num_seqs:
-        Maximum concurrent sequences in the continuous-batching queue.
-    metrics:
-        Shared ``Metrics`` instance for telemetry.
-    """
+    """Async wrapper around ``vllm.AsyncLLMEngine``."""
 
     def __init__(
         self,
         model_path: str,
-        dtype: str,
-        max_model_len: int,
-        gpu_memory_utilization: float,
-        tensor_parallel_size: int,
-        quantization: str | None,
-        max_num_seqs: int,
-        metrics: Metrics,
-    ) -> None:
-        self._engine = None
-        self._SamplingParams = None
-        self._metrics = metrics
+        dtype: str = "bfloat16",
+        max_model_len: int = 4096,
+        gpu_memory_utilization: float = 0.90,
+        tensor_parallel_size: int = 1,
+        quantization: str | None = None,
+    ):
         self.model_path = model_path
-        self.ready = False
+        self._engine = None
+        self._mock = False
 
         try:
-            from vllm import AsyncEngineArgs, AsyncLLMEngine  # type: ignore[import]
-            from vllm.sampling_params import SamplingParams  # type: ignore[import]
-
-            engine_args = AsyncEngineArgs(
+            from vllm import AsyncEngineArgs, AsyncLLMEngine
+            args = AsyncEngineArgs(
                 model=model_path,
                 dtype=dtype,
                 max_model_len=max_model_len,
                 gpu_memory_utilization=gpu_memory_utilization,
                 tensor_parallel_size=tensor_parallel_size,
-                quantization=quantization or None,
-                trust_remote_code=True,
-                enable_prefix_caching=True,
-                disable_log_requests=True,
-                max_num_seqs=max_num_seqs,
+                quantization=quantization,
             )
-            self._engine = AsyncLLMEngine.from_engine_args(engine_args)
-            self._SamplingParams = SamplingParams
-            self.ready = True
-            log.info("vLLM engine ready: %s", model_path)
-
+            self._engine = AsyncLLMEngine.from_engine_args(args)
+            logger.info("vLLM engine ready: %s", model_path)
         except ImportError:
-            log.warning("vLLM not installed — running in echo mock mode.")
-            self.ready = True
-
-        except Exception as exc:
-            log.error("Engine init failed: %s", exc)
-            raise
+            logger.warning(
+                "vLLM not installed; engine running in MOCK mode "
+                "(prompts will be echoed back).",
+            )
+            self._mock = True
 
     async def generate(
         self,
         prompt: str,
-        max_tokens: int,
-        temperature: float,
-        top_p: float,
-        top_k: int,
-        repetition_penalty: float,
-        stop: list[str] | None,
-        seed: int | None,
+        params: GenerationParams,
         request_id: str,
-    ) -> AsyncGenerator[tuple[str, bool], None]:
-        """Yield (text_delta, is_final) pairs.
+    ) -> GenerationResult:
+        """Non-streaming generation."""
+        if self._mock:
+            return GenerationResult(
+                text=f"[mock] {prompt[:80]}…",
+                prompt_tokens=len(prompt.split()),
+                completion_tokens=8,
+                finish_reason="stop",
+            )
 
-        The final tuple has is_final=True; text may be empty on the last yield.
-        """
-        t0 = time.perf_counter()
+        from vllm import SamplingParams
+        sp = SamplingParams(
+            max_tokens=params.max_tokens,
+            temperature=params.temperature,
+            top_p=params.top_p,
+            top_k=params.top_k,
+            stop=params.stop,
+        )
+        results_gen = self._engine.generate(prompt, sp, request_id)
 
-        if self._engine is None:
-            # Mock: stream back the first 80 chars of the prompt
-            words = f"[MOCK] {prompt[:80]}".split()
-            for i, word in enumerate(words[:max_tokens]):
-                await asyncio.sleep(0.005)
-                yield word + " ", i == len(words) - 1
-            lat = (time.perf_counter() - t0) * 1000
-            self._metrics.record(len(words), lat)
-            return
+        final = None
+        async for result in results_gen:
+            final = result
+        assert final is not None
 
-        sampling = self._SamplingParams(
-            max_tokens=max_tokens,
-            temperature=temperature,
-            top_p=top_p,
-            top_k=top_k,
-            repetition_penalty=repetition_penalty,
-            stop=stop or [],
-            seed=seed,
+        out = final.outputs[0]
+        return GenerationResult(
+            text=out.text,
+            prompt_tokens=len(final.prompt_token_ids),
+            completion_tokens=len(out.token_ids),
+            finish_reason="stop" if out.finish_reason == "stop" else "length",
         )
 
-        prev_len = 0
-        final_output = None
+    async def stream(
+        self,
+        prompt: str,
+        params: GenerationParams,
+        request_id: str,
+    ) -> AsyncIterator[str]:
+        """Streaming generation (SSE-friendly token deltas)."""
+        if self._mock:
+            for word in prompt.split()[:8]:
+                yield word + " "
+            return
 
-        async for req_out in self._engine.generate(prompt, sampling, request_id):
-            if req_out.outputs:
-                out = req_out.outputs[0]
-                delta = out.text[prev_len:]
-                prev_len = len(out.text)
-                is_final = out.finish_reason is not None
-                yield delta, is_final
-                final_output = out
+        from vllm import SamplingParams
+        sp = SamplingParams(
+            max_tokens=params.max_tokens,
+            temperature=params.temperature,
+            top_p=params.top_p,
+            top_k=params.top_k,
+            stop=params.stop,
+        )
 
-        lat = (time.perf_counter() - t0) * 1000
-        n_tokens = len(final_output.token_ids) if final_output else 0
-        self._metrics.record(n_tokens, lat)
-        log.debug("[%s] %d tokens  %.0f ms", request_id, n_tokens, lat)
+        last_text = ""
+        async for result in self._engine.generate(prompt, sp, request_id):
+            new_text = result.outputs[0].text
+            delta = new_text[len(last_text):]
+            if delta:
+                yield delta
+            last_text = new_text

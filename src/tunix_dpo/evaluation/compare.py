@@ -1,13 +1,14 @@
-"""
-Pure comparison functions for TruthfulQA and ToxiGen result dicts.
+"""Pure comparison of base vs tuned model evaluation results.
 
-No file I/O.  All functions take the JSON-serialisable dicts produced
-by ``runner.py`` and return JSON-serialisable comparison dicts.
+Takes two evaluation result dicts and produces a structured comparison
+covering deltas, bootstrap confidence intervals, effect sizes, and a verdict.
+No I/O, no plotting.
 """
 
 from __future__ import annotations
 
-import numpy as np
+from typing import Any
+
 from tunix_dpo.evaluation.stats import (
     bootstrap_ci,
     cohens_h,
@@ -16,167 +17,130 @@ from tunix_dpo.evaluation.stats import (
 )
 
 
-def _delta(base: float, tuned: float, lower_better: bool = False) -> dict:
-    delta = tuned - base
-    improved = (-delta if lower_better else delta) > 0
+_TQA_METRICS: dict[str, bool] = {
+    "binary_accuracy":   False,
+    "binary_f1":         False,
+    "mc1":               False,
+    "mc2":               False,
+    "calibration_error": True,
+}
+
+
+def compare_truthfulqa(base: dict[str, Any], tuned: dict[str, Any]) -> dict[str, Any]:
+    """Compare two TruthfulQA evaluation results."""
+    metrics_block: dict[str, dict[str, Any]] = {}
+    for metric, lower_is_better in _TQA_METRICS.items():
+        b = float(base.get(metric, 0.0))
+        t = float(tuned.get(metric, 0.0))
+        delta = t - b
+        improved = (delta < 0) if lower_is_better else (delta > 0)
+        metrics_block[metric] = {
+            "base": b,
+            "tuned": t,
+            "absolute_delta": delta,
+            "relative_change_pct": relative_change(b, t),
+            "improved": bool(improved),
+        }
+
+    base_bool = [r["binary_acc"] for r in base.get("per_question", [])]
+    tuned_bool = [r["binary_acc"] for r in tuned.get("per_question", [])]
+    base_ci = bootstrap_ci(base_bool) if base_bool else (0.0, 0.0)
+    tuned_ci = bootstrap_ci(tuned_bool) if tuned_bool else (0.0, 0.0)
+
+    cat_block: dict[str, dict[str, float]] = {}
+    base_cats = base.get("categories", {}) or {}
+    tuned_cats = tuned.get("categories", {}) or {}
+    for cat in set(base_cats) | set(tuned_cats):
+        b_acc = float(base_cats.get(cat, {}).get("binary_accuracy", 0.0))
+        t_acc = float(tuned_cats.get(cat, {}).get("binary_accuracy", 0.0))
+        cat_block[cat] = {"base": b_acc, "tuned": t_acc, "delta": t_acc - b_acc}
+
+    h = cohens_h(tuned.get("binary_accuracy", 0.0), base.get("binary_accuracy", 0.0))
+
     return {
-        "base": round(base, 4),
-        "tuned": round(tuned, 4),
-        "absolute_delta": round(delta, 4),
-        "relative_pct": round(relative_change(base, tuned), 2),
-        "improved": improved,
-    }
-
-
-# ── TruthfulQA ────────────────────────────────────────────────────────────────
-
-
-def compare_truthfulqa(base: dict, tuned: dict) -> dict:
-    """Compare two TruthfulQA result dicts.
-
-    Returns a comparison dict with:
-        metrics     — per-metric deltas
-        categories  — per-category binary accuracy deltas
-        bootstrap   — 95% CI on binary accuracy
-        effect_size — Cohen's h
-        verdict     — top-level summary flags
-    """
-    comp: dict = {
-        "models": {"base": base["model_label"], "tuned": tuned["model_label"]},
-        "n_questions": base["n_questions"],
-        "metrics": {},
-        "categories": {},
-        "bootstrap": {},
-        "effect_size": {},
-        "verdict": {},
-    }
-
-    metric_specs = [
-        ("mc1", False),
-        ("mc2", False),
-        ("binary_accuracy", False),
-        ("binary_f1", False),
-        ("calibration_error", True),
-    ]
-    for key, lower_better in metric_specs:
-        comp["metrics"][key] = _delta(base[key], tuned[key], lower_better)
-
-    base_bin = [r["binary_acc"] for r in base["per_question"]]
-    tuned_bin = [r["binary_acc"] for r in tuned["per_question"]]
-    bci, tci = bootstrap_ci(base_bin), bootstrap_ci(tuned_bin)
-    comp["bootstrap"] = {
-        "metric": "binary_accuracy",
-        "base": {
-            "mean": round(float(np.mean(base_bin)), 4),
-            "ci_95": list(map(lambda x: round(x, 4), bci)),
+        "models": {
+            "base": base.get("model_label", base.get("model_path", "base")),
+            "tuned": tuned.get("model_label", tuned.get("model_path", "tuned")),
         },
-        "tuned": {
-            "mean": round(float(np.mean(tuned_bin)), 4),
-            "ci_95": list(map(lambda x: round(x, 4), tci)),
+        "metrics": metrics_block,
+        "categories": cat_block,
+        "bootstrap": {
+            "base_ci": list(base_ci),
+            "tuned_ci": list(tuned_ci),
+            "non_overlapping": tuned_ci[0] > base_ci[1] or base_ci[0] > tuned_ci[1],
         },
-        "non_overlapping": bool(tci[0] > bci[1]),
-    }
-
-    h = cohens_h(tuned["binary_accuracy"], base["binary_accuracy"])
-    comp["effect_size"] = {
-        "cohens_h": round(h, 4),
-        "interpretation": interpret_cohens_h(h),
-    }
-
-    for cat in sorted(set(list(base.get("categories", {})) + list(tuned.get("categories", {})))):
-        bc = base["categories"].get(cat, {})
-        tc = tuned["categories"].get(cat, {})
-        if bc and tc:
-            comp["categories"][cat] = {
-                "n": bc["n"],
-                "base_binary_acc": round(bc.get("binary_acc", 0.0), 4),
-                "tuned_binary_acc": round(tc.get("binary_acc", 0.0), 4),
-                "delta": round(tc.get("binary_acc", 0.0) - bc.get("binary_acc", 0.0), 4),
-            }
-
-    ba = comp["metrics"]["binary_accuracy"]
-    calib = comp["metrics"]["calibration_error"]
-    comp["verdict"] = {
-        "safety_uplift": ba["improved"],
-        "absolute_gain": ba["absolute_delta"],
-        "relative_gain_pct": ba["relative_pct"],
-        "calibration_improved": calib["improved"],
-        "statistically_significant": comp["bootstrap"]["non_overlapping"],
-        "effect_size": comp["effect_size"]["interpretation"],
-    }
-    return comp
-
-
-# ── ToxiGen ───────────────────────────────────────────────────────────────────
-
-
-def compare_toxigen(base: dict, tuned: dict) -> dict:
-    """Compare two ToxiGen result dicts."""
-    comp: dict = {
-        "models": {"base": base["model_label"], "tuned": tuned["model_label"]},
-        "n_rows": base["n_rows"],
-        "metrics": {},
-        "groups": {},
-        "bootstrap": {},
-        "effect_size": {},
-        "verdict": {},
-    }
-
-    metric_specs = [
-        ("gen_toxicity_rate", True),
-        ("avg_toxicity_score", True),
-        ("disc_accuracy", False),
-        ("disc_true_positive_rate", False),
-        ("disc_true_negative_rate", False),
-    ]
-    for key, lower_better in metric_specs:
-        comp["metrics"][key] = _delta(base[key], tuned[key], lower_better)
-
-    base_scores = [r["toxicity_score"] for r in base["per_row"]]
-    tuned_scores = [r["toxicity_score"] for r in tuned["per_row"]]
-    bci, tci = bootstrap_ci(base_scores), bootstrap_ci(tuned_scores)
-    comp["bootstrap"] = {
-        "metric": "avg_toxicity_score",
-        "base": {
-            "mean": round(float(np.mean(base_scores)), 4),
-            "ci_95": list(map(lambda x: round(x, 4), bci)),
+        "effect_size": {
+            "cohens_h": h,
+            "interpretation": interpret_cohens_h(h),
         },
-        "tuned": {
-            "mean": round(float(np.mean(tuned_scores)), 4),
-            "ci_95": list(map(lambda x: round(x, 4), tci)),
+        "verdict": {
+            "safety_uplift": metrics_block["binary_accuracy"]["improved"],
+            "absolute_gain": metrics_block["binary_accuracy"]["absolute_delta"],
+            "relative_gain_pct": metrics_block["binary_accuracy"]["relative_change_pct"],
         },
-        "non_overlapping": bool(tci[1] < bci[0]),
     }
 
-    h = cohens_h(base["gen_toxicity_rate"], tuned["gen_toxicity_rate"])
-    comp["effect_size"] = {
-        "cohens_h": round(abs(h), 4),
-        "interpretation": interpret_cohens_h(h),
-        "direction": "toxicity reduced" if h > 0 else "toxicity increased (unexpected)",
-    }
 
-    for grp in sorted(set(list(base.get("groups", {})) + list(tuned.get("groups", {})))):
-        bg = base["groups"].get(grp, {})
-        tg = tuned["groups"].get(grp, {})
-        if bg and tg:
-            comp["groups"][grp] = {
-                "n": bg["n"],
-                "base_tox_rate": round(bg.get("gen_tox_rate", 0.0), 4),
-                "tuned_tox_rate": round(tg.get("gen_tox_rate", 0.0), 4),
-                "tox_delta": round(tg.get("gen_tox_rate", 0.0) - bg.get("gen_tox_rate", 0.0), 4),
-                "base_disc_acc": round(bg.get("disc_accuracy", 0.0), 4),
-                "tuned_disc_acc": round(tg.get("disc_accuracy", 0.0), 4),
-                "disc_delta": round(tg.get("disc_accuracy", 0.0) - bg.get("disc_accuracy", 0.0), 4),
-            }
+_TOX_METRICS: dict[str, bool] = {
+    "gen_toxicity_rate":        True,
+    "avg_toxicity_score":       True,
+    "disc_accuracy":            False,
+    "disc_true_positive_rate":  False,
+    "disc_true_negative_rate":  False,
+}
 
-    tox = comp["metrics"]["gen_toxicity_rate"]
-    disc = comp["metrics"]["disc_accuracy"]
-    comp["verdict"] = {
-        "toxicity_reduced": tox["improved"],
-        "absolute_tox_reduction": -tox["absolute_delta"],
-        "relative_tox_reduction_pct": -tox["relative_pct"],
-        "discrimination_improved": disc["improved"],
-        "statistically_significant": comp["bootstrap"]["non_overlapping"],
-        "effect_size": comp["effect_size"]["interpretation"],
+
+def compare_toxigen(base: dict[str, Any], tuned: dict[str, Any]) -> dict[str, Any]:
+    """Compare two ToxiGen evaluation results."""
+    metrics_block: dict[str, dict[str, Any]] = {}
+    for metric, lower_is_better in _TOX_METRICS.items():
+        b = float(base.get(metric, 0.0))
+        t = float(tuned.get(metric, 0.0))
+        delta = t - b
+        improved = (delta < 0) if lower_is_better else (delta > 0)
+        metrics_block[metric] = {
+            "base": b,
+            "tuned": t,
+            "absolute_delta": delta,
+            "relative_change_pct": relative_change(b, t),
+            "improved": bool(improved),
+        }
+
+    base_scores = [r["toxicity_score"] for r in base.get("per_row", [])]
+    tuned_scores = [r["toxicity_score"] for r in tuned.get("per_row", [])]
+    base_ci = bootstrap_ci(base_scores) if base_scores else (0.0, 0.0)
+    tuned_ci = bootstrap_ci(tuned_scores) if tuned_scores else (0.0, 0.0)
+
+    group_block: dict[str, dict[str, float]] = {}
+    base_groups = base.get("groups", {}) or {}
+    tuned_groups = tuned.get("groups", {}) or {}
+    for g in set(base_groups) | set(tuned_groups):
+        b_rate = float(base_groups.get(g, {}).get("rate", 0.0))
+        t_rate = float(tuned_groups.get(g, {}).get("rate", 0.0))
+        group_block[g] = {"base": b_rate, "tuned": t_rate, "delta": t_rate - b_rate}
+
+    h = cohens_h(base.get("gen_toxicity_rate", 0.0), tuned.get("gen_toxicity_rate", 0.0))
+
+    return {
+        "models": {
+            "base": base.get("model_label", base.get("model_path", "base")),
+            "tuned": tuned.get("model_label", tuned.get("model_path", "tuned")),
+        },
+        "metrics": metrics_block,
+        "groups": group_block,
+        "bootstrap": {
+            "base_ci": list(base_ci),
+            "tuned_ci": list(tuned_ci),
+            "non_overlapping": tuned_ci[1] < base_ci[0] or base_ci[1] < tuned_ci[0],
+        },
+        "effect_size": {
+            "cohens_h": h,
+            "interpretation": interpret_cohens_h(h),
+            "direction": "toxicity reduced" if h > 0 else "toxicity unchanged or worse",
+        },
+        "verdict": {
+            "toxicity_reduced": metrics_block["gen_toxicity_rate"]["improved"],
+            "absolute_tox_reduction": -metrics_block["gen_toxicity_rate"]["absolute_delta"],
+            "discrimination_improved": metrics_block["disc_accuracy"]["improved"],
+        },
     }
-    return comp

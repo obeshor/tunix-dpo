@@ -1,9 +1,5 @@
 """
-Training configuration dataclasses.
-
-All fields have defaults so configs can be constructed programmatically
-without a YAML file.  The YAML loader in train.py overlays these defaults
-with values from disk.
+Training configuration dataclasses (pure — no logic, no I/O).
 """
 
 from __future__ import annotations
@@ -14,26 +10,42 @@ from dataclasses import dataclass, field
 @dataclass
 class ModelConfig:
     model_name: str = "google/gemma-3-1b-it"
-    max_seq_len: int = 512
-    dtype: str = "bfloat16"  # bfloat16 = TPU v5e native
+    """HuggingFace model ID. Gemma 3 1B IT is text-only and uses
+    ``AutoModelForCausalLM`` / ``Gemma3ForCausalLM`` for loading."""
+
+    max_seq_len: int = 1024
+    """Sequence length cap during training. Gemma 3 1B supports up to 32K
+    tokens but DPO preference pairs rarely need more than ~1K."""
+
+    dtype: str = "bfloat16"
+    """TPU v5e native datatype. Recommended for Gemma 3 — quality may
+    degrade with float16."""
 
 
 @dataclass
 class TrainingConfig:
-    # DPO objective
-    beta: float = 0.1  # KL coefficient
-    learning_rate: float = 1e-5
-    lr_schedule: str = "cosine"  # cosine | linear | constant
+    beta: float = 0.1
+    """KL coefficient. Typical range 0.05–0.5. Higher = stronger alignment
+    but greater risk of forgetting base capabilities."""
+
+    learning_rate: float = 1.0e-5
+    lr_schedule: str = "cosine"
     warmup_steps: int = 100
     num_epochs: int = 1
-    per_device_batch_size: int = 4
-    gradient_accumulation_steps: int = 2
 
-    # SFT trajectory comparison
-    sft_loss_weight: float = 0.0  # 0 = pure DPO; >0 = blended
-    log_sft_loss: bool = True  # always log for comparison
+    per_device_batch_size: int = 8
+    """Per-chip batch. With 8 chips on a v5e-8 this gives a global batch of 64.
+    Gemma 3 1B is ~2 GB in bfloat16 — comfortably fits."""
 
-    # Regularisation
+    gradient_accumulation_steps: int = 1
+
+    sft_loss_weight: float = 0.0
+    """0 = pure DPO. >0 blends in standard SFT cross-entropy on the chosen
+    response. Keep 0 for the canonical paper."""
+
+    log_sft_loss: bool = True
+    """Always compute SFT loss for logging, even when not used in the gradient."""
+
     max_grad_norm: float = 1.0
     weight_decay: float = 0.01
 
@@ -49,9 +61,9 @@ class DataConfig:
 @dataclass
 class InfraConfig:
     gcs_bucket: str = "gs://your-project-tunix-checkpoints"
-    checkpoint_dir: str = "checkpoints/dpo_run"
+    checkpoint_dir: str = "checkpoints/dpo_v5e_run"
     checkpoint_every_steps: int = 500
-    log_dir: str = "logs/dpo_run"
+    log_dir: str = "logs/dpo_v5e_run"
     log_every_steps: int = 10
     eval_every_steps: int = 250
     seed: int = 42

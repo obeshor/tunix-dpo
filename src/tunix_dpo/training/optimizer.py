@@ -1,48 +1,43 @@
 """
-Optimizer factory for DPO training.
-
-Returns an optax GradientTransformation composed of:
-  - gradient clipping
-  - AdamW with weight decay
-  - cosine / linear / constant LR schedule with warmup
+Optimizer factory — gradient clipping → AdamW with cosine warmup.
 """
 
 from __future__ import annotations
 
 import optax
+
 from tunix_dpo.training.config import TrainingConfig
 
 
+def make_lr_schedule(cfg: TrainingConfig, total_steps: int) -> optax.Schedule:
+    """Cosine schedule with linear warmup. Falls back to constant if requested."""
+    if cfg.lr_schedule == "constant":
+        return optax.constant_schedule(cfg.learning_rate)
+
+    warmup = optax.linear_schedule(
+        init_value=0.0,
+        end_value=cfg.learning_rate,
+        transition_steps=cfg.warmup_steps,
+    )
+    cosine_steps = max(1, total_steps - cfg.warmup_steps)
+    cosine = optax.cosine_decay_schedule(
+        init_value=cfg.learning_rate,
+        decay_steps=cosine_steps,
+        alpha=0.1,
+    )
+    return optax.join_schedules([warmup, cosine], boundaries=[cfg.warmup_steps])
+
+
 def make_optimizer(cfg: TrainingConfig, total_steps: int) -> optax.GradientTransformation:
-    """Build the optimizer from a TrainingConfig.
-
-    Parameters
-    ----------
-    cfg:
-        Training hyperparameters.
-    total_steps:
-        Total number of gradient update steps (used to build the LR schedule).
-    """
-    warmup = cfg.warmup_steps
-
-    if cfg.lr_schedule == "cosine":
-        schedule: optax.Schedule = optax.warmup_cosine_decay_schedule(
-            init_value=0.0,
-            peak_value=cfg.learning_rate,
-            warmup_steps=warmup,
-            decay_steps=total_steps,
-            end_value=cfg.learning_rate * 0.1,
-        )
-    elif cfg.lr_schedule == "linear":
-        ramp = optax.linear_schedule(0.0, cfg.learning_rate, warmup)
-        decay = optax.linear_schedule(cfg.learning_rate, 0.0, total_steps - warmup)
-        schedule = optax.join_schedules([ramp, decay], boundaries=[warmup])
-    elif cfg.lr_schedule == "constant":
-        schedule = cfg.learning_rate  # type: ignore[assignment]
-    else:
-        raise ValueError(f"Unknown lr_schedule: {cfg.lr_schedule!r}")
-
+    """AdamW with global-norm clipping and cosine warmup schedule."""
+    schedule = make_lr_schedule(cfg, total_steps)
     return optax.chain(
         optax.clip_by_global_norm(cfg.max_grad_norm),
-        optax.adamw(learning_rate=schedule, weight_decay=cfg.weight_decay),
+        optax.adamw(
+            learning_rate=schedule,
+            b1=0.9,
+            b2=0.95,
+            eps=1e-8,
+            weight_decay=cfg.weight_decay,
+        ),
     )

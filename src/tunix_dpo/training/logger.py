@@ -1,76 +1,56 @@
 """
-Training trajectory logger.
-
-Writes every metric to both TensorBoard (via tensorboardX) and a local
-``metrics.jsonl`` for offline analysis. The JSONL file is consumed by
-``plot_trajectories.py`` and the Phase 3 benchmark dashboard.
+Training trajectory logger — TensorBoard + JSONL sidecar.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import time
 from pathlib import Path
+from typing import Any
 
-log = logging.getLogger(__name__)
-
-try:
-    from tensorboardX import SummaryWriter  # type: ignore[import]
-
-    _HAS_TB = True
-except ImportError:
-    _HAS_TB = False
-    log.warning("tensorboardX not found — writing metrics to JSONL only.")
+logger = logging.getLogger(__name__)
 
 
 class TrajectoryLogger:
-    """Logs scalar metrics to TensorBoard and a JSONL sidecar file.
+    """Dual-write metrics logger: TensorBoard for the dashboard, JSONL for replay."""
 
-    Parameters
-    ----------
-    log_dir:
-        Directory where ``events.out.tfevents.*`` and ``metrics.jsonl``
-        are written.
-    """
+    def __init__(self, log_dir: str | Path):
+        self.log_dir = Path(log_dir)
+        self.log_dir.mkdir(parents=True, exist_ok=True)
 
-    def __init__(self, log_dir: str | Path) -> None:
-        self._dir = Path(log_dir)
-        self._dir.mkdir(parents=True, exist_ok=True)
-        self._jsonl = self._dir / "metrics.jsonl"
-        self._writer = SummaryWriter(str(self._dir)) if _HAS_TB else None
+        self.jsonl_path = self.log_dir / "metrics.jsonl"
+        self._jsonl = open(self.jsonl_path, "a", buffering=1)
 
-    def log(
-        self,
-        step: int,
-        metrics: dict[str, float],
-        prefix: str = "train",
-    ) -> None:
-        """Write a dict of scalar metrics at the given step.
+        try:
+            from torch.utils.tensorboard import SummaryWriter
+            self.tb = SummaryWriter(log_dir=str(self.log_dir))
+        except ImportError:
+            logger.info("tensorboard not installed; logging JSONL only")
+            self.tb = None
 
-        Parameters
-        ----------
-        step:
-            Global training step.
-        metrics:
-            ``{metric_name: value}`` — all values must be Python floats.
-        prefix:
-            ``"train"`` or ``"eval"``.
-        """
-        record = {"step": step, "prefix": prefix, **metrics}
-        with open(self._jsonl, "a", encoding="utf-8") as f:
-            f.write(json.dumps(record) + "\n")
+        self.start_time = time.time()
 
-        if self._writer is not None:
+    def log(self, step: int, metrics: dict[str, Any]) -> None:
+        elapsed = time.time() - self.start_time
+        row = {"step": step, "elapsed_s": round(elapsed, 2)}
+        for k, v in metrics.items():
+            try:
+                row[k] = float(v)
+            except (TypeError, ValueError):
+                row[k] = str(v)
+        self._jsonl.write(json.dumps(row) + "\n")
+
+        if self.tb is not None:
             for k, v in metrics.items():
-                self._writer.add_scalar(f"{prefix}/{k}", float(v), global_step=step)
+                try:
+                    self.tb.add_scalar(k, float(v), step)
+                except (TypeError, ValueError):
+                    pass
 
     def close(self) -> None:
-        if self._writer is not None:
-            self._writer.close()
-
-    # Context-manager support
-    def __enter__(self) -> TrajectoryLogger:
-        return self
-
-    def __exit__(self, *_: object) -> None:
-        self.close()
+        if self._jsonl:
+            self._jsonl.close()
+        if self.tb is not None:
+            self.tb.close()

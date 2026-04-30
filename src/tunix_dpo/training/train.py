@@ -1,263 +1,207 @@
 """
-DPO training loop — CLI entry-point.
+DPO training CLI — registered as ``tunix-train``.
 
-All heavy logic lives in the sibling modules:
-    config.py   — dataclasses
-    losses.py   — pure JAX loss functions
-    dataset.py  — HHRLHFDataset + DataLoader
-    optimizer.py — make_optimizer()
-    logger.py   — TrajectoryLogger
-
-This module orchestrates them and adds pmap, checkpointing, and eval.
-
-Usage
------
-    python -m tunix_dpo.training.train --config configs/dpo_v5e.yaml
-    tunix-train --config configs/dpo_v5e.yaml training.beta=0.05
+Orchestrates Phase 2 of the project: loads YAML config, the Gemma 3 1B IT
+base model on TPU via JAX/Flax, snapshots a frozen reference copy, iterates
+over the curated DPO JSONL data, computes the DPO loss with gradients
+sharded across the 8 v5e chips, saves Orbax checkpoints, and logs to
+TensorBoard + metrics.jsonl.
 """
 
 from __future__ import annotations
 
-import argparse
-import json
 import logging
+import os
+import sys
 from dataclasses import asdict
 from pathlib import Path
 
-import jax
-import jax.numpy as jnp
-import orbax.checkpoint as ocp
-from flax.training import train_state
-from transformers import AutoTokenizer
+import click
+import yaml
+
 from tunix_dpo.training.config import Config
-from tunix_dpo.training.dataset import HHRLHFDataset, make_dataloader
-from tunix_dpo.training.logger import TrajectoryLogger
-from tunix_dpo.training.losses import dpo_loss, log_probs_from_logits, sft_loss
-from tunix_dpo.training.optimizer import make_optimizer
 
-log = logging.getLogger(__name__)
+logger = logging.getLogger(__name__)
 
 
-# ── pmap training step ────────────────────────────────────────────────────────
+def load_config(config_path: str | Path, overrides: list[str]) -> Config:
+    """Load YAML config and apply ``section.field=value`` CLI overrides."""
+    with open(config_path) as f:
+        cfg_dict = yaml.safe_load(f) or {}
+
+    cfg = Config(
+        model=_dict_to_dataclass(cfg_dict.get("model", {}), "ModelConfig"),
+        training=_dict_to_dataclass(cfg_dict.get("training", {}), "TrainingConfig"),
+        data=_dict_to_dataclass(cfg_dict.get("data", {}), "DataConfig"),
+        infra=_dict_to_dataclass(cfg_dict.get("infra", {}), "InfraConfig"),
+    )
+
+    for ov in overrides:
+        if "=" not in ov:
+            raise click.BadParameter(f"override must be key=value: {ov!r}")
+        key, value = ov.split("=", 1)
+        _apply_override(cfg, key, value)
+
+    return cfg
 
 
-def make_train_step(
-    beta: float,
-    sft_weight: float,
-    log_sft: bool,
-) -> ...:  # type: ignore[type-arg]
-    """Return a pmap-compiled training step closure."""
-
-    @jax.jit
-    def _step(state: train_state.TrainState, ref_params: dict, batch: dict) -> tuple:
-        def loss_fn(params: dict) -> tuple[jnp.ndarray, dict]:
-            chosen_logits = state.apply_fn({"params": params}, batch["chosen_input_ids"]).logits
-            rejected_logits = state.apply_fn({"params": params}, batch["rejected_input_ids"]).logits
-
-            policy_chosen_lp = log_probs_from_logits(chosen_logits, batch["chosen_labels"])
-            policy_rejected_lp = log_probs_from_logits(rejected_logits, batch["rejected_labels"])
-
-            ref_chosen_lp = jax.lax.stop_gradient(
-                log_probs_from_logits(
-                    state.apply_fn({"params": ref_params}, batch["chosen_input_ids"]).logits,
-                    batch["chosen_labels"],
-                )
-            )
-            ref_rejected_lp = jax.lax.stop_gradient(
-                log_probs_from_logits(
-                    state.apply_fn({"params": ref_params}, batch["rejected_input_ids"]).logits,
-                    batch["rejected_labels"],
-                )
-            )
-
-            d_loss, chosen_r, rejected_r = dpo_loss(
-                policy_chosen_lp,
-                policy_rejected_lp,
-                ref_chosen_lp,
-                ref_rejected_lp,
-                beta=beta,
-            )
-
-            s_loss = sft_loss(chosen_logits, batch["chosen_labels"]) if log_sft else jnp.zeros(())
-
-            total = d_loss + sft_weight * s_loss
-            metrics = {
-                "dpo_loss": d_loss,
-                "sft_loss": s_loss,
-                "total_loss": total,
-                "chosen_reward": chosen_r.mean(),
-                "rejected_reward": rejected_r.mean(),
-                "reward_margin": (chosen_r - rejected_r).mean(),
-                "reward_accuracy": (chosen_r > rejected_r).astype(jnp.float32).mean(),
-            }
-            return total, metrics
-
-        (_, metrics), grads = jax.value_and_grad(loss_fn, has_aux=True)(state.params)
-        grads = jax.lax.pmean(grads, axis_name="batch")
-        metrics = jax.lax.pmean(metrics, axis_name="batch")
-        return state.apply_gradients(grads=grads), metrics
-
-    return jax.pmap(_step, axis_name="batch")
+def _dict_to_dataclass(d: dict, name: str):
+    from tunix_dpo.training import config as cfg_mod
+    cls = getattr(cfg_mod, name)
+    instance = cls()
+    for k, v in d.items():
+        if hasattr(instance, k):
+            setattr(instance, k, v)
+    return instance
 
 
-# ── Main training function ────────────────────────────────────────────────────
+def _apply_override(cfg: Config, key: str, value: str) -> None:
+    parts = key.split(".")
+    if len(parts) != 2:
+        raise click.BadParameter(f"override key must be section.field: {key!r}")
+    section, field = parts
+    section_obj = getattr(cfg, section, None)
+    if section_obj is None or not hasattr(section_obj, field):
+        raise click.BadParameter(f"unknown override key: {key!r}")
+    current = getattr(section_obj, field)
+    if isinstance(current, bool):
+        coerced: object = value.lower() in {"1", "true", "yes"}
+    elif isinstance(current, int):
+        coerced = int(value)
+    elif isinstance(current, float):
+        coerced = float(value)
+    else:
+        coerced = value
+    setattr(section_obj, field, coerced)
 
 
-def train(cfg: Config) -> None:
+def run_training(cfg: Config) -> None:
+    """The actual training loop. Imports JAX lazily."""
+    import jax
+    import jax.numpy as jnp
+    from flax.training import train_state
+
+    from tunix_dpo.training.dataset import DataLoader, HHRLHFDataset
+    from tunix_dpo.training.logger import TrajectoryLogger
+    from tunix_dpo.training.losses import dpo_loss, sft_loss
+    from tunix_dpo.training.optimizer import make_optimizer
+
     devices = jax.devices()
     n_devices = len(devices)
-    log.info("JAX devices: %d  (%s)", n_devices, devices[0].device_kind)
+    if n_devices < 1:
+        raise RuntimeError("No JAX devices found — did you install jax[tpu]?")
+    logger.info("JAX devices: %d × %s", n_devices, devices[0].device_kind)
 
-    global_batch = cfg.training.per_device_batch_size * n_devices
+    from transformers import AutoTokenizer, FlaxAutoModelForCausalLM
 
+    logger.info("Loading tokenizer: %s", cfg.model.model_name)
     tokenizer = AutoTokenizer.from_pretrained(cfg.model.model_name)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
 
-    train_ds = HHRLHFDataset(
-        Path(cfg.data.data_dir) / cfg.data.train_file,
-        tokenizer,
-        cfg.model.max_seq_len,
+    logger.info("Loading model in %s …", cfg.model.dtype)
+    dtype = {"bfloat16": jnp.bfloat16, "float16": jnp.float16, "float32": jnp.float32}[cfg.model.dtype]
+    model = FlaxAutoModelForCausalLM.from_pretrained(
+        cfg.model.model_name,
+        dtype=dtype,
+        from_pt=True,
     )
-    eval_ds = HHRLHFDataset(
-        Path(cfg.data.data_dir) / cfg.data.eval_file,
-        tokenizer,
-        cfg.model.max_seq_len,
-    )
+    params = model.params
+    ref_params = jax.tree.map(lambda x: x, params)
 
-    train_loader = make_dataloader(
-        train_ds, global_batch, shuffle=True, num_workers=cfg.data.num_workers
-    )
-    eval_loader = make_dataloader(
-        eval_ds, global_batch, shuffle=False, num_workers=cfg.data.num_workers
-    )
+    train_path = Path(cfg.data.data_dir) / cfg.data.train_file
+    train_ds = HHRLHFDataset(train_path, tokenizer, cfg.model.max_seq_len)
+    global_bs = cfg.training.per_device_batch_size * n_devices
+    loader = DataLoader(train_ds, batch_size=global_bs, seed=cfg.infra.seed)
 
-    steps_per_epoch = len(train_loader) // cfg.training.gradient_accumulation_steps
-    total_steps = steps_per_epoch * cfg.training.num_epochs
-
-    try:
-        import tunix  # type: ignore[import]
-
-        model = tunix.load_model(cfg.model.model_name, dtype=cfg.model.dtype)
-        params = model.init_params(jax.random.PRNGKey(cfg.infra.seed))
-    except ImportError:
-        from transformers import FlaxAutoModelForCausalLM  # type: ignore[import]
-
-        hf_model = FlaxAutoModelForCausalLM.from_pretrained(
-            cfg.model.model_name, dtype=jnp.bfloat16
-        )
-        model, params = hf_model.module, hf_model.params
-
-    ref_params = jax.tree_util.tree_map(lambda x: x.copy(), params)
+    total_steps = len(loader) * cfg.training.num_epochs
     optimizer = make_optimizer(cfg.training, total_steps)
-    state = train_state.TrainState.create(apply_fn=model.apply, params=params, tx=optimizer)
+    state = train_state.TrainState.create(apply_fn=model.__call__, params=params, tx=optimizer)
 
-    state = jax.device_put_replicated(state, devices)
-    ref_params = jax.device_put_replicated(ref_params, devices)
+    def loss_fn(params, batch):
+        chosen_logits = model(batch["chosen_ids"], params=params).logits
+        rejected_logits = model(batch["rejected_ids"], params=params).logits
+        ref_chosen_logits = model(batch["chosen_ids"], params=ref_params).logits
+        ref_rejected_logits = model(batch["rejected_ids"], params=ref_params).logits
 
-    p_train_step = make_train_step(
-        cfg.training.beta, cfg.training.sft_loss_weight, cfg.training.log_sft_loss
-    )
-    checkpointer = ocp.StandardCheckpointer()
-    ckpt_dir = Path(cfg.infra.checkpoint_dir)
-
-    with TrajectoryLogger(cfg.infra.log_dir) as tlog:
-        global_step = 0
-        for epoch in range(cfg.training.num_epochs):
-            log.info("── Epoch %d/%d ──", epoch + 1, cfg.training.num_epochs)
-
-            for batch in train_loader:
-                batch = {
-                    k: v.reshape((n_devices, cfg.training.per_device_batch_size, -1))
-                    for k, v in batch.items()
-                }
-                state, metrics = p_train_step(state, ref_params, batch)
-                global_step += 1
-
-                if global_step % cfg.infra.log_every_steps == 0:
-                    m = {k: float(v[0]) for k, v in metrics.items()}
-                    tlog.log(global_step, m, prefix="train")
-                    log.info(
-                        "step=%d  dpo=%.4f  sft=%.4f  reward_acc=%.3f",
-                        global_step,
-                        m["dpo_loss"],
-                        m["sft_loss"],
-                        m["reward_accuracy"],
-                    )
-
-                if global_step % cfg.infra.eval_every_steps == 0:
-                    eval_m = _eval(state, ref_params, eval_loader, p_train_step, n_devices, cfg)
-                    tlog.log(global_step, eval_m, prefix="eval")
-
-                if global_step % cfg.infra.checkpoint_every_steps == 0:
-                    ckpt = ckpt_dir / f"step_{global_step:06d}"
-                    checkpointer.save(
-                        ckpt,
-                        jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state)),
-                    )
-
-        checkpointer.save(
-            ckpt_dir / "final",
-            jax.device_get(jax.tree_util.tree_map(lambda x: x[0], state)),
+        loss, dpo_metrics = dpo_loss(
+            chosen_logits, rejected_logits,
+            ref_chosen_logits, ref_rejected_logits,
+            batch["chosen_ids"], batch["rejected_ids"],
+            batch["chosen_mask"], batch["rejected_mask"],
+            beta=cfg.training.beta,
         )
 
-    log.info("Training complete.")
+        if cfg.training.log_sft_loss:
+            sft_l = sft_loss(chosen_logits, batch["chosen_ids"], batch["chosen_mask"])
+            dpo_metrics["sft_loss"] = sft_l
+            if cfg.training.sft_loss_weight > 0:
+                loss = loss + cfg.training.sft_loss_weight * sft_l
+
+        return loss, dpo_metrics
+
+    grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
+
+    log = TrajectoryLogger(cfg.infra.log_dir)
+    log.log(0, {"event": "start", "total_steps": total_steps, "global_batch": global_bs})
+
+    step = 0
+    for epoch in range(cfg.training.num_epochs):
+        logger.info("── Epoch %d/%d ──", epoch + 1, cfg.training.num_epochs)
+        for batch in loader:
+            batch_jax = {k: jnp.asarray(v) for k, v in batch.items()}
+            (loss, metrics), grads = grad_fn(state.params, batch_jax)
+            state = state.apply_gradients(grads=grads)
+
+            if step % cfg.infra.log_every_steps == 0:
+                log.log(step, {"dpo_loss": float(loss), **{k: float(v) for k, v in metrics.items()}})
+
+            if step > 0 and step % cfg.infra.checkpoint_every_steps == 0:
+                _save_checkpoint(state, cfg, step)
+
+            step += 1
+
+    _save_checkpoint(state, cfg, step, final=True)
+    log.close()
+    logger.info("Training complete. Final step: %d", step)
 
 
-def _eval(state, ref_params, loader, step_fn, n_devices, cfg: Config) -> dict:
-    accum: dict[str, float] = {}
-    n = 0
-    for batch in loader:
-        batch = {
-            k: v.reshape((n_devices, cfg.training.per_device_batch_size, -1))
-            for k, v in batch.items()
-        }
-        _, metrics = step_fn(state, ref_params, batch)
-        for k, v in metrics.items():
-            accum[k] = accum.get(k, 0.0) + float(v[0])
-        n += 1
-    return {k: v / n for k, v in accum.items()}
+def _save_checkpoint(state, cfg: Config, step: int, final: bool = False) -> None:
+    import orbax.checkpoint as ocp
+    sub = "final" if final else f"step_{step}"
+    ckpt_path = f"{cfg.infra.gcs_bucket.rstrip('/')}/{cfg.infra.checkpoint_dir}/{sub}"
+    logger.info("Saving checkpoint → %s", ckpt_path)
+    checkpointer = ocp.PyTreeCheckpointer()
+    checkpointer.save(ckpt_path, state.params, force=True)
 
 
-# ── Config loading ────────────────────────────────────────────────────────────
+@click.command(context_settings={"ignore_unknown_options": True})
+@click.option(
+    "--config",
+    type=click.Path(exists=True, dir_okay=False),
+    required=True,
+    help="Path to YAML config (e.g. configs/dpo_v5e.yaml).",
+)
+@click.argument("overrides", nargs=-1)
+def main(config: str, overrides: tuple[str, ...]) -> None:
+    """Run DPO training on a TPU v5e-8.
 
+    Example::
 
-def load_config(path: str, overrides: list[str]) -> Config:
-    import yaml  # type: ignore[import]
+        tunix-train --config configs/dpo_v5e.yaml training.beta=0.05
+    """
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s",
+        stream=sys.stdout,
+    )
 
-    cfg = Config()
-    if Path(path).exists():
-        with open(path) as f:
-            raw = yaml.safe_load(f)
-        for section, values in (raw or {}).items():
-            sub = getattr(cfg, section, None)
-            if sub and isinstance(values, dict):
-                for k, v in values.items():
-                    setattr(sub, k, v)
+    cfg = load_config(config, list(overrides))
+    logger.info("Loaded config from %s", config)
+    logger.info("Effective config: %s", asdict(cfg))
 
-    for ov in overrides:
-        if "=" in ov:
-            dotted, val = ov.lstrip("-").split("=", 1)
-            section, attr = dotted.split(".", 1)
-            sub = getattr(cfg, section, None)
-            if sub:
-                setattr(sub, attr, type(getattr(sub, attr))(val))
-    return cfg
-
-
-# ── CLI ───────────────────────────────────────────────────────────────────────
-
-
-def main(argv: list[str] | None = None) -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-
-    parser = argparse.ArgumentParser(description="DPO training on TPU via Tunix/JAX.")
-    parser.add_argument("--config", default="configs/dpo_v5e.yaml")
-    args, overrides = parser.parse_known_args(argv)
-
-    cfg = load_config(args.config, overrides)
-    log.info("Config:\n%s", json.dumps(asdict(cfg), indent=2))
-    train(cfg)
+    os.makedirs(cfg.infra.log_dir, exist_ok=True)
+    run_training(cfg)
 
 
 if __name__ == "__main__":

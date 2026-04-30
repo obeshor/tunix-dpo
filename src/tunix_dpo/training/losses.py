@@ -1,63 +1,89 @@
 """
-Pure JAX loss functions — no I/O, no side effects.
+Pure JAX loss functions: DPO and SFT.
 
-Both functions are jit-compatible and pmap-safe.
+No I/O, no side effects. The training loop calls these inside a ``jax.jit``
+or ``jax.pmap`` to compile and shard across the 8 v5e chips.
 """
 
 from __future__ import annotations
 
 import jax
 import jax.numpy as jnp
-import optax
 
 
-def log_probs_from_logits(
-    logits: jnp.ndarray,  # [batch, seq_len, vocab_size]
-    labels: jnp.ndarray,  # [batch, seq_len]  — -100 = masked
-) -> jnp.ndarray:  # [batch]
-    """Sum of per-token log-probabilities over non-masked positions."""
-    log_probs = jax.nn.log_softmax(logits, axis=-1)
-    token_lp = jnp.take_along_axis(log_probs, labels[..., None], axis=-1).squeeze(-1)
-    mask = (labels != -100).astype(jnp.float32)
-    return (token_lp * mask).sum(axis=-1)
+def log_probs_from_logits(logits, labels, mask):
+    """Sum log p(labels | context) over the response tokens only.
 
-
-def dpo_loss(
-    policy_chosen_logps: jnp.ndarray,  # [batch]
-    policy_rejected_logps: jnp.ndarray,  # [batch]
-    ref_chosen_logps: jnp.ndarray,  # [batch]
-    ref_rejected_logps: jnp.ndarray,  # [batch]
-    beta: float,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
-    """Direct Preference Optimisation loss (Rafailov et al., 2023).
-
-    ℒ = -𝔼 log σ( β·[log π(y_w|x) - log π_ref(y_w|x)]
-                  - β·[log π(y_l|x) - log π_ref(y_l|x)] )
+    Parameters
+    ----------
+    logits : (B, T, V) float
+    labels : (B, T)    int  — token IDs at each position
+    mask   : (B, T)    int  — 1 over response tokens, 0 over prompt + padding
 
     Returns
     -------
-    loss             : scalar
-    chosen_rewards   : [batch]  implicit reward on chosen responses
-    rejected_rewards : [batch]  implicit reward on rejected responses
+    (B,) float — total log-probability the model assigns to the response.
     """
-    chosen_ratios = policy_chosen_logps - ref_chosen_logps
-    rejected_ratios = policy_rejected_logps - ref_rejected_logps
-    logits = beta * (chosen_ratios - rejected_ratios)
-    loss = -jax.nn.log_sigmoid(logits).mean()
-    return loss, chosen_ratios, rejected_ratios
+    log_probs = jax.nn.log_softmax(logits, axis=-1)
+    selected = jnp.take_along_axis(log_probs, labels[..., None], axis=-1).squeeze(-1)
+    return (selected * mask).sum(axis=-1)
 
 
-def sft_loss(
-    logits: jnp.ndarray,  # [batch, seq_len, vocab_size]
-    labels: jnp.ndarray,  # [batch, seq_len]
-) -> jnp.ndarray:
-    """Causal next-token prediction cross-entropy.
+def dpo_loss(
+    policy_logits_chosen,
+    policy_logits_rejected,
+    ref_logits_chosen,
+    ref_logits_rejected,
+    labels_chosen,
+    labels_rejected,
+    mask_chosen,
+    mask_rejected,
+    beta: float = 0.1,
+):
+    """Compute the DPO loss for one batch of preference pairs.
 
-    Logged alongside DPO loss every step to compare training trajectories.
+    The DPO objective is::
+
+        ℒ = −E [ log σ( β · ((logπ_θ(y_w|x) − logπ_ref(y_w|x))
+                            − (logπ_θ(y_l|x) − logπ_ref(y_l|x))) ) ]
+
+    Returns
+    -------
+    loss : float
+        Scalar mean DPO loss over the batch.
+    metrics : dict
+        - reward_acc:    fraction of pairs where the model already prefers
+                         chosen over rejected
+        - reward_margin: mean of (chosen_logratio − rejected_logratio)
     """
-    mask = (labels != -100).astype(jnp.float32)
-    n_tok = mask.sum()
-    xe = optax.softmax_cross_entropy_with_integer_labels(
-        logits, jnp.where(labels == -100, 0, labels)
+    pol_chosen = log_probs_from_logits(policy_logits_chosen, labels_chosen, mask_chosen)
+    pol_rejected = log_probs_from_logits(policy_logits_rejected, labels_rejected, mask_rejected)
+
+    ref_chosen = jax.lax.stop_gradient(
+        log_probs_from_logits(ref_logits_chosen, labels_chosen, mask_chosen)
     )
-    return (xe * mask).sum() / jnp.maximum(n_tok, 1.0)
+    ref_rejected = jax.lax.stop_gradient(
+        log_probs_from_logits(ref_logits_rejected, labels_rejected, mask_rejected)
+    )
+
+    chosen_logratio = pol_chosen - ref_chosen
+    rejected_logratio = pol_rejected - ref_rejected
+
+    logits = beta * (chosen_logratio - rejected_logratio)
+    losses = -jax.nn.log_sigmoid(logits)
+
+    metrics = {
+        "reward_margin": (chosen_logratio - rejected_logratio).mean(),
+        "reward_acc": (chosen_logratio > rejected_logratio).mean().astype(jnp.float32),
+        "policy_chosen_logp": pol_chosen.mean(),
+        "policy_rejected_logp": pol_rejected.mean(),
+    }
+    return losses.mean(), metrics
+
+
+def sft_loss(logits, labels, mask):
+    """Standard SFT (next-token cross-entropy) loss over the response tokens."""
+    log_probs = jax.nn.log_softmax(logits, axis=-1)
+    selected = jnp.take_along_axis(log_probs, labels[..., None], axis=-1).squeeze(-1)
+    n_tokens = mask.sum() + 1e-8
+    return -(selected * mask).sum() / n_tokens

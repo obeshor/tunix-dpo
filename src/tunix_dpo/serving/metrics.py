@@ -1,9 +1,4 @@
-"""
-Request telemetry — no FastAPI dependency.
-
-Keeps a running tally of requests, tokens, errors, and latency.
-Exposes a ``prometheus_text()`` method for the /metrics endpoint.
-"""
+"""In-process metrics for the inference server (pure data, Prometheus output)."""
 
 from __future__ import annotations
 
@@ -11,53 +6,53 @@ import time
 
 
 class Metrics:
-    """Thread-safe (single-process async) telemetry store."""
+    """Lightweight rolling metrics for inference traffic."""
 
     def __init__(self) -> None:
         self.requests_total = 0
-        self.tokens_generated = 0
         self.errors_total = 0
-        self.latency_sum_ms = 0.0
-        self._req_id = 0
-        self._start = time.time()
-
-    def next_id(self) -> str:
-        self._req_id += 1
-        return f"req-{self._req_id:08d}"
+        self.tokens_generated = 0
+        self.total_latency_ms = 0.0
+        self.start_time = time.time()
+        self._counter = 0
 
     def record(self, tokens: int, latency_ms: float) -> None:
         self.requests_total += 1
-        self.tokens_generated += tokens
-        self.latency_sum_ms += latency_ms
+        self.tokens_generated += int(tokens)
+        self.total_latency_ms += float(latency_ms)
 
     def record_error(self) -> None:
         self.errors_total += 1
 
     @property
     def avg_latency_ms(self) -> float:
-        return self.latency_sum_ms / max(self.requests_total, 1)
+        if self.requests_total == 0:
+            return 0.0
+        return self.total_latency_ms / self.requests_total
 
     @property
-    def avg_tokens_per_sec(self) -> float:
-        elapsed = max(time.time() - self._start, 1e-6)
-        return self.tokens_generated / elapsed
+    def uptime_s(self) -> float:
+        return time.time() - self.start_time
+
+    def next_id(self) -> str:
+        self._counter += 1
+        return f"req-{self._counter:08d}"
 
     def prometheus_text(self) -> str:
-        lines = [
-            "# HELP tunix_requests_total Total inference requests",
-            "# TYPE tunix_requests_total counter",
-            f"tunix_requests_total {self.requests_total}",
-            "# HELP tunix_tokens_generated_total Tokens generated",
-            "# TYPE tunix_tokens_generated_total counter",
-            f"tunix_tokens_generated_total {self.tokens_generated}",
-            "# HELP tunix_errors_total Request errors",
-            "# TYPE tunix_errors_total counter",
-            f"tunix_errors_total {self.errors_total}",
-            "# HELP tunix_avg_latency_ms Average latency ms",
-            "# TYPE tunix_avg_latency_ms gauge",
-            f"tunix_avg_latency_ms {self.avg_latency_ms:.2f}",
-            "# HELP tunix_tokens_per_second Token throughput",
-            "# TYPE tunix_tokens_per_second gauge",
-            f"tunix_tokens_per_second {self.avg_tokens_per_sec:.2f}",
-        ]
-        return "\n".join(lines) + "\n"
+        return (
+            f"# HELP tunix_requests_total Total inference requests served\n"
+            f"# TYPE tunix_requests_total counter\n"
+            f"tunix_requests_total {self.requests_total}\n"
+            f"# HELP tunix_errors_total Total inference errors\n"
+            f"# TYPE tunix_errors_total counter\n"
+            f"tunix_errors_total {self.errors_total}\n"
+            f"# HELP tunix_tokens_generated_total Total tokens generated\n"
+            f"# TYPE tunix_tokens_generated_total counter\n"
+            f"tunix_tokens_generated_total {self.tokens_generated}\n"
+            f"# HELP tunix_avg_latency_ms Average request latency in ms\n"
+            f"# TYPE tunix_avg_latency_ms gauge\n"
+            f"tunix_avg_latency_ms {self.avg_latency_ms:.3f}\n"
+            f"# HELP tunix_uptime_seconds Server uptime in seconds\n"
+            f"# TYPE tunix_uptime_seconds counter\n"
+            f"tunix_uptime_seconds {self.uptime_s:.1f}\n"
+        )
