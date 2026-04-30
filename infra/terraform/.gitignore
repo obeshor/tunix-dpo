@@ -1,0 +1,30 @@
+ Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+.env
+
+# Build artifacts
+dist/
+build/
+*.egg-info/
+
+# IDE
+.idea/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+terraform.tfplan
+*.plan
+terraform.tfvars
+*.tfvars
+.terraform.lock.hcl
