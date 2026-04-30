@@ -32,6 +32,15 @@ htmlcov/
 .vscode/
 *.iml
 
+# Terraform
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+crash.*.log
+.terraform.lock.hcl
+
 # Generated data (large — do not commit)
 data/
 hh_rlhf_curated/
