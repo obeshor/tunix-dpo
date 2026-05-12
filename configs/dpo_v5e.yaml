@@ -12,7 +12,7 @@ training:
   lr_schedule:                cosine
   warmup_steps:               100
   num_epochs:                 1
-  per_device_batch_size:      4            # ⇒ global batch 64 on v5e-8
+  per_device_batch_size:      16            # ⇒ global batch 64 on v5e-4
   gradient_accumulation_steps: 1
   sft_loss_weight:            0.0
   log_sft_loss:               true
