@@ -39,6 +39,7 @@ pandas
 tabulate
 python-dotenv
 
+
 # Jupyter environment
 ipykernel
 jupyterlab
