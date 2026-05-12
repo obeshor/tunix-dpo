@@ -65,7 +65,6 @@ cover/
 *.iml
 
 # Generated data (large — do not commit)
-data/
 hh_rlhf_curated/
 benchmark_results/
 exports/

@@ -11,12 +11,12 @@ set -euo pipefail
 : "${TPU_NAME:=tunix-dpo-v5e}"
 : "${ZONE:=us-west4-a}"            # v5e zone
 : "${REGION:=us-west4}"            # quota lives at the region level
-: "${ACCELERATOR_TYPE:=v5litepod-8}"   # gcloud's name for v5e-8
+: "${ACCELERATOR_TYPE:=v5litepod-4}"   # gcloud's name for v5e-4
 : "${RUNTIME_VERSION:=v2-alpha-tpuv5-lite}"
 : "${BUCKET_NAME:=${PROJECT_ID}-tunix-checkpoints}"
 
 echo "════════════════════════════════════════════════════════════════════"
-echo "  Tunix DPO :: TPU v5e-8 provisioner"
+echo "  Tunix DPO :: TPU v5e-4 provisioner"
 echo "════════════════════════════════════════════════════════════════════"
 echo "  PROJECT_ID:        $PROJECT_ID"
 echo "  TPU_NAME:          $TPU_NAME"

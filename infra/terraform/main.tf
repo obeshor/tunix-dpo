@@ -122,7 +122,7 @@ resource "google_tpu_v2_vm" "training" {
   provider = google-beta
   name             = var.tpu_name
   zone             = var.zone
-  description      = "Tunix DPO training VM (Gemma 3 1B IT, DPO, v5e-8)"
+  description      = "Tunix DPO training VM (Gemma 3 1B IT, DPO, v5e-4)"
   accelerator_type = var.accelerator_type
   runtime_version  = var.runtime_version
 

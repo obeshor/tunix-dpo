@@ -51,9 +51,8 @@ terraform destroy -var-file=environments/dev/terraform.tfvars
 
 ## Cost reminder
 
-A `v5litepod-4` (TPU v5e-4) on demand costs roughly **$12–16/hour**. A typical
-training run (1 epoch over 157K HH-RLHF pairs with Gemma 3 1B IT) takes
-**3–6 hours**, so a complete run is **$50–100**.
+A `v5litepod-4` (TPU v5e-4) on demand.
+A typical training run (1 epoch over 157K HH-RLHF pairs with Gemma 3 1B IT). 
 
 The GCS bucket is set to `force_destroy = false`, so `terraform destroy` will
 **not** delete it if it contains checkpoints — your trained weights are safe.
