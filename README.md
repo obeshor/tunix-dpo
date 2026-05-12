@@ -86,10 +86,9 @@ GCS bucket, service account, and IAM bindings.
 - **Zone:** `us-west4-a` is one of the canonical Google Cloud zones for TPU v5e.
   See [Google's TPU v5e training docs](https://cloud.google.com/tpu/docs/v5e-training)
   which use this zone in their default examples.
-- **TPU:** v5e-8 (`v5litepod-8` in `gcloud` syntax) — 8 chips, 192 GB HBM total. Holds Gemma 3 1B
+- **TPU:** v5e-4 (`v5litepod-4` in `gcloud` syntax) — 4 chips, 192 GB HBM total. Holds Gemma 3 1B
   twice over (policy + frozen reference for DPO) with room to spare for activations.
-- **Cost:** ~$12–16/hour on demand. A typical training run (157 K pairs, 1 epoch)
-  finishes in 3–6 hours, so $50–100 per run.
+
 
 ## Architecture invariants
 
@@ -125,6 +124,8 @@ gcloud run deploy tunix-dpo \
   --memory 32Gi --cpu 8 --port 8000 --allow-unauthenticated          # ruff + mypy
 ```
 
-## License
 
-Apache-2.0
+#### ⚠️ Important: Cleanup
+To stop billing, you **must delete the node** after your experiment is finished:
+```bash
+gcloud compute tpus tpu-vm delete <NODE_ID> --zone <ZONE> --quiet

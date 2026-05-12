@@ -41,7 +41,7 @@ variable "tpu_name" {
 }
 
 variable "accelerator_type" {
-  description = "TPU accelerator type. v5litepod-4 = v5e with 8 chips."
+  description = "TPU accelerator type. v5litepod-4 = v5e with 4 chips."
   type        = string
   default     = "v5litepod-4"
 }

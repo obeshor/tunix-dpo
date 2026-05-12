@@ -51,7 +51,7 @@ terraform destroy -var-file=environments/dev/terraform.tfvars
 
 ## Cost reminder
 
-A `v5litepod-8` (TPU v5e-4) on demand costs roughly **$12–16/hour**. A typical
+A `v5litepod-4` (TPU v5e-4) on demand costs roughly **$12–16/hour**. A typical
 training run (1 epoch over 157K HH-RLHF pairs with Gemma 3 1B IT) takes
 **3–6 hours**, so a complete run is **$50–100**.
 
