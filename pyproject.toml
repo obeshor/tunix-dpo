@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name            = "tunix-dpo"
 version         = "0.2.0"
-description     = "End-to-end DPO alignment pipeline for Gemma 3 1B IT — HH-RLHF curation, TPU training, TruthfulQA / ToxiGen benchmarking, vLLM serving."
+description     = "End-to-end DPO alignment pipeline for Gemma 2B — HH-RLHF curation, TPU training, TruthfulQA / ToxiGen benchmarking, vLLM serving."
 readme          = "README.md"
 requires-python = ">=3.11,<3.13"
 license         = { text = "Apache-2.0" }
@@ -19,7 +19,7 @@ dependencies = [
     "tqdm>=4.66",
     "datasets>=2.18",
     "huggingface-hub>=0.22",
-    "transformers>=4.50",         # Gemma 3 support requires >= 4.50
+    "transformers[flax]>=4.44.0",
     "tokenizers>=0.20",
     "pydantic>=2.6",
     "click>=8.1",
