@@ -1,4 +1,3 @@
-# Tunix DPO — Makefile for common dev tasks
 .PHONY: install install-dev test test-unit test-integration lint type fmt clean curate train eval export serve docker-build
 
 PYTHON ?= python3.11

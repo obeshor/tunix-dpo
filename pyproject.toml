@@ -4,13 +4,19 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name            = "tunix-dpo"
-version         = "0.2.0"
-description     = "End-to-end DPO alignment pipeline for Gemma 2B — HH-RLHF curation, TPU training, TruthfulQA / ToxiGen benchmarking, vLLM serving."
+[build-system]
+requires      = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name            = "tunix-dpo"
+version         = "0.2.1"
+description     = "End-to-end DPO alignment pipeline for Gemma 3 1B IT — HH-RLHF curation, TPU training, TruthfulQA / ToxiGen benchmarking, vLLM serving."
 readme          = "README.md"
 requires-python = ">=3.11,<3.13"
 license         = { text = "Apache-2.0" }
-authors         = [{ name = "Yannick Obam" }]
-keywords        = ["llm", "alignment", "dpo", "gemma", "tpu", "jax"]
+authors         = [{ name = "Tunix DPO Project" }]
+keywords        = ["llm", "alignment", "dpo", "gemma", "tpu"]
 
 dependencies = [
     "numpy>=1.26",
@@ -19,31 +25,45 @@ dependencies = [
     "tqdm>=4.66",
     "datasets>=2.18",
     "huggingface-hub>=0.22",
-    "transformers[flax]>=4.44.0",
+    "transformers>=4.50",          # Gemma 3 support
     "tokenizers>=0.20",
     "pydantic>=2.6",
     "click>=8.1",
 ]
 
 [project.optional-dependencies]
+# Training stack — PyTorch + torch/xla for TPU v5e (Gemma 3 has no Flax port).
 training = [
+    "torch>=2.4",
+    "torch-xla>=2.4; platform_system == 'Linux'",
+    "tensorboardX>=2.6",            # logger dep — no torch required
+]
+
+# JAX-only loss/stat helpers — kept for unit-testing the algorithmic core
+# without needing the full training stack. Useful in CI.
+jax = [
     "jax>=0.4.30",
     "flax>=0.8",
     "optax>=0.2",
     "orbax-checkpoint>=0.5",
-    "tensorboard>=2.16",
 ]
+
+# Inference serving — vLLM and FastAPI.
 serving = [
     "fastapi>=0.110",
     "uvicorn[standard]>=0.29",
     "vllm>=0.5.5; platform_system != 'Darwin'",
-    "torch>=2.4; platform_system != 'Darwin'",
+    "torch>=2.4",
     "safetensors>=0.4",
 ]
+
+# Evaluation extras — plotting and pandas for offline analysis.
 eval = [
     "matplotlib>=3.8",
     "pandas>=2.2",
 ]
+
+# Development tooling.
 dev = [
     "pytest>=8.0",
     "pytest-cov>=5.0",
@@ -51,7 +71,8 @@ dev = [
     "mypy>=1.10",
     "pre-commit>=3.7",
 ]
-all = ["tunix-dpo[training,serving,eval,dev]"]
+
+all = ["tunix-dpo[training,jax,serving,eval,dev]"]
 
 [project.scripts]
 tunix-curate = "tunix_dpo.data.curate:main"
@@ -66,6 +87,7 @@ where = ["src"]
 [tool.ruff]
 line-length    = 100
 target-version = "py311"
+extend-exclude = ["tests/fixtures"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "N", "SIM"]
