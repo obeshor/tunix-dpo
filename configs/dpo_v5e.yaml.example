@@ -26,7 +26,7 @@ data:
   num_workers: 4
 
 infra:
-  gcs_bucket:             gs://tpusprint-tunix-checkpoints
+  gcs_bucket:             gs://your-project-id-tunix-checkpoints
   checkpoint_dir:         checkpoints/dpo_v5e_run
   checkpoint_every_steps: 500
   log_dir:                logs/dpo_v5e_run
